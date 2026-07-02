@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Era Battle - Age of War Inspired Evolution Game</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <!-- Top HUD Bar -->
+        <header id="hud">
+            <div class="hud-section base-health-container">
+                <span class="hud-label">Your Base</span>
+                <div class="health-bar-bg">
+                    <div id="player-base-hp-bar" class="health-bar-fill player"></div>
+                </div>
+                <span id="player-base-hp-text" class="hud-value">2000/2000 HP</span>
+            </div>
+
+            <div class="hud-section central-stats">
+                <div class="stat-box">
+                    <span class="stat-label">GOLD</span>
+                    <span id="gold-value" class="stat-value gold-text">150</span>
+                </div>
+                <div class="stat-box era-box">
+                    <span id="current-era-text" class="stat-value era-text">Stone Age</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">XP</span>
+                    <span id="xp-value" class="stat-value xp-text">0 / 2000</span>
+                </div>
+            </div>
+
+            <div class="hud-section base-health-container">
+                <span class="hud-label">Enemy Base</span>
+                <div class="health-bar-bg">
+                    <div id="enemy-base-hp-bar" class="health-bar-fill enemy"></div>
+                </div>
+                <span id="enemy-base-hp-text" class="hud-value">2000/2000 HP</span>
+            </div>
+        </header>
+
+        <!-- Canvas and Scroll Controls -->
+        <div id="canvas-wrapper">
+            <canvas id="gameCanvas" width="960" height="400"></canvas>
+            <div id="scroll-left-btn" class="scroll-indicator" title="Scroll Left (Mouse Wheel / Click)">&#9664;</div>
+            <div id="scroll-right-btn" class="scroll-indicator" title="Scroll Right (Mouse Wheel / Click)">&#9654;</div>
+            <div id="scroll-instructions">Drag Canvas to Scroll | Scroll Wheel works too!</div>
+        </div>
+
+        <!-- Controls panel -->
+        <footer id="controls-panel">
+            <div class="control-group">
+                <h3>SPAWN UNITS</h3>
+                <div class="buttons-grid" id="unit-spawners">
+                    <button id="spawn-u1" class="btn unit-btn" data-unit="1" title="Shortcut: 1">
+                        <span class="unit-name">Clubman</span>
+                        <span class="unit-cost">15g</span>
+                    </button>
+                    <button id="spawn-u2" class="btn unit-btn" data-unit="2" title="Shortcut: 2">
+                        <span class="unit-name">Spearman</span>
+                        <span class="unit-cost">25g</span>
+                    </button>
+                    <button id="spawn-u3" class="btn unit-btn" data-unit="3" title="Shortcut: 3">
+                        <span class="unit-name">Mammoth Rider</span>
+                        <span class="unit-cost">100g</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>DEFENSIVE TOWERS</h3>
+                <div class="buttons-grid">
+                    <button id="buy-tower-slot" class="btn tower-btn" title="Add another slot to mount defensive towers">
+                        <span class="tower-label">Unlock Slot</span>
+                        <span id="tower-slot-cost" class="tower-cost">150g</span>
+                    </button>
+                    <button id="buy-tower" class="btn tower-btn" title="Place a tower in an empty slot">
+                        <span class="tower-label">Build Tower</span>
+                        <span id="tower-cost" class="tower-cost">200g</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="control-group action-group">
+                <h3>ERA & SPECIAL</h3>
+                <div class="buttons-grid">
+                    <button id="evolve-btn" class="btn evolve-btn disabled" title="Shortcut: E">
+                        <span class="btn-primary-text">EVOLVE ERA</span>
+                        <span id="evolve-cost-text" class="btn-sub-text">Need 2000 XP</span>
+                    </button>
+                    <button id="special-btn" class="btn special-btn" title="Shortcut: Space">
+                        <span class="btn-primary-text">SPECIAL ATTACK</span>
+                        <span id="special-status-text" class="btn-sub-text">Ready</span>
+                        <div id="special-cooldown-overlay"></div>
+                    </button>
+                </div>
+            </div>
+
+            <div class="control-group utility-group">
+                <h3>SYSTEM</h3>
+                <div class="buttons-grid">
+                    <button id="pause-btn" class="btn system-btn">PAUSE</button>
+                    <button id="speed-btn" class="btn system-btn">SPEED: 1x</button>
+                    <button id="restart-btn" class="btn system-btn text-danger">RESTART</button>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Modals -->
+    <!-- Intro / Tutorial Modal -->
+    <div id="intro-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h1>ERA BATTLE</h1>
+            <p class="subtitle">A classic 2D base-defense evolution war game</p>
+            <div class="modal-body">
+                <h3>How to Play</h3>
+                <ul>
+                    <li><strong>Spawn Units:</strong> Use Gold to recruit units. They automatically march right to destroy the enemy base.</li>
+                    <li><strong>Earn Gold & XP:</strong> Defeating enemy forces rewards you with currency and experience.</li>
+                    <li><strong>Evolve Era:</strong> Accumulate enough XP to advance to the next age (Stone &rarr; Ancient &rarr; Medieval &rarr; Modern &rarr; Future). Evolution unlocks stronger base designs, new towers, new special attacks, and modern units!</li>
+                    <li><strong>Defend:</strong> Build defensive towers on your base to ward off invading units.</li>
+                    <li><strong>Special Attacks:</strong> Use your era's unique weapon with a cooldown to clear enemy groups when overwhelmed.</li>
+                    <li><strong>Controls:</strong> Drag the battlefield canvas to scroll or hover near edges. Use keyboard hotkeys <code>1</code>, <code>2</code>, <code>3</code> to spawn units, <code>E</code> to evolve, and <code>Space</code> for the special attack.</li>
+                </ul>
+            </div>
+            <button id="start-game-btn" class="btn-action">START BATTLE</button>
+        </div>
+    </div>
+
+    <!-- Game Over Modal (Victory / Defeat) -->
+    <div id="gameover-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h1 id="gameover-title">VICTORY!</h1>
+            <p id="gameover-subtitle" class="subtitle">You have successfully destroyed the enemy base!</p>
+            <div class="modal-body stats-body">
+                <h3>Battle Reports</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <span class="label">Time Elapsed</span>
+                        <span id="stat-time" class="val">00:00</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Units Recruited</span>
+                        <span id="stat-spawned" class="val">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Enemies Slain</span>
+                        <span id="stat-killed" class="val">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Gold Accumulated</span>
+                        <span id="stat-gold" class="val">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Highest Era Reached</span>
+                        <span id="stat-era" class="val">Stone Age</span>
+                    </div>
+                </div>
+            </div>
+            <button id="play-again-btn" class="btn-action">PLAY AGAIN</button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
