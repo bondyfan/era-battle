@@ -43,40 +43,45 @@ dashboard. Single-player works immediately with zero configuration.
 
 ---
 
-## Enable Online Multiplayer (Firebase Realtime Database)
+## Online Multiplayer (Firebase Realtime Database)
 
 Online play uses a **host-authoritative** model over the Firebase **Realtime Database**
 (fast and cheap for the ~11 state-snapshots/second the game sends). One player creates a
 match and shares a 4-letter code; the other joins. Both players command the blue army on
 the left of their own screen (the view is mirrored for the guest).
 
-Firebase project config already lives in `firebase-config.js`. To turn multiplayer on you
-must enable the Realtime Database once in the Firebase console:
+**This is already set up — nothing to do:**
 
-1. **Firebase console → Build → Realtime Database → Create Database.**
-2. Copy the database URL it gives you into `databaseURL` in `firebase-config.js`:
-   - US default: `https://era-battle-default-rtdb.firebaseio.com`
-   - EU region: `https://era-battle-default-rtdb.europe-west1.firebasedatabase.app`
-   (the file currently defaults to the US URL — change it if your DB is in another region)
-3. **Rules tab →** set at minimum:
+- The default Realtime Database instance is live in **`europe-west1`**:
+  `https://era-battle-default-rtdb.europe-west1.firebasedatabase.app`
+- `firebase-config.js` already points `databaseURL` at it.
+- Security rules are deployed: the `games` subtree is open read/write; the database
+  root is denied. (Fine for a casual game — no accounts, no user data.)
 
    ```json
    {
      "rules": {
+       ".read": false,
+       ".write": false,
        "games": { ".read": true, ".write": true }
      }
    }
    ```
 
-   This is fine for a casual game. Tighten it later if you add accounts.
+So once the site is deployed, "Create Online Match" / "Join Online Match" work out of
+the box. Single-player never touches Firebase at all.
 
-4. Make sure your Cloudflare Pages domain is allowed:
-   **Firebase console → Authentication → Settings → Authorized domains** (add your
-   `*.pages.dev` domain and any custom domain). *(Only strictly needed if you later add
-   Firebase Auth, but good to set.)*
+### Good to know / optional hardening
 
-That's it — no server code, no functions. If the Realtime Database isn't set up, the
-single-player game still works perfectly; only the online buttons will report an error.
+- **Authorized domains:** if you later add Firebase Auth, add your `*.pages.dev` (and any
+  custom) domain under *Firebase console → Authentication → Settings → Authorized domains*.
+  Not needed for the current anonymous RTDB setup.
+- The rules are intentionally open on `games` (world read/write). For a public game this
+  means anyone can read/write that path — acceptable for a casual title, but keep an eye on
+  RTDB usage. Old `games/<code>` nodes are marked `ended` but not auto-pruned; add a TTL
+  cleanup later if you want.
+- Region is permanent for the default database. To change it you'd delete and recreate the
+  instance, then update `databaseURL`.
 
 ---
 
