@@ -9,6 +9,14 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+    </script>
 </head>
 <body>
     <div id="game-container">
@@ -49,18 +57,15 @@
             <div id="mp-badge" class="hidden">ONLINE</div>
             <div id="unit-tooltip" class="hidden"></div>
 
-            <div id="scroll-left-btn" class="scroll-indicator" title="Pan left (hold)">&#9664;</div>
-            <div id="scroll-right-btn" class="scroll-indicator" title="Pan right (hold)">&#9654;</div>
+            <div id="drag-ghost" class="hidden"></div>
 
-            <!-- Zoom controls -->
-            <div id="zoom-controls">
-                <button id="zoom-out" class="zoom-btn" title="Zoom out ( - )">&minus;</button>
-                <span id="zoom-label">100%</span>
-                <button id="zoom-in" class="zoom-btn" title="Zoom in ( + )">&plus;</button>
-                <button id="zoom-fit" class="zoom-btn zoom-fit" title="Fit whole battlefield ( 0 )">FIT</button>
+            <div id="lane-hud">
+              <button id="lane-top" class="lane-pill locked"><span class="lane-name">TOP</span><span class="lane-cost">🔒 300g</span></button>
+              <button id="lane-mid" class="lane-pill selected"><span class="lane-name">MID</span><span class="lane-cost"></span></button>
+              <button id="lane-bottom" class="lane-pill locked"><span class="lane-name">BOT</span><span class="lane-cost">🔒 300g</span></button>
             </div>
 
-            <div id="scroll-instructions">Drag to pan &nbsp;·&nbsp; Scroll wheel to zoom &nbsp;·&nbsp; FIT shows the whole field</div>
+            <div id="tower-banner" class="hidden">Click on YOUR half to place a tower · Esc to cancel</div>
         </div>
 
         <!-- Controls panel -->
@@ -182,13 +187,14 @@
             <button id="howto-toggle" class="howto-toggle">How to Play ▾</button>
             <div id="howto-body" class="modal-body howto-body">
                 <ul>
-                    <li><strong>Spawn Units:</strong> Spend Gold to recruit units. They march right and attack automatically. Gold also trickles in over time.</li>
+                    <li><strong>Spawn &amp; Send Units:</strong> Spend Gold to recruit units in this top-down view, then DRAG a unit onto a lane to send it there. It marches toward the enemy and attacks automatically. Gold also trickles in over time.</li>
+                    <li><strong>Pick a Lane:</strong> The MID lane is free; unlock the TOP and BOTTOM lanes for gold to open extra attack routes.</li>
                     <li><strong>Earn Gold &amp; XP:</strong> Defeating enemy forces rewards currency and experience.</li>
                     <li><strong>Evolve Era:</strong> Bank enough XP to advance Stone &rarr; Ancient &rarr; Medieval &rarr; Modern &rarr; Future. Each era unlocks stronger units, towers and a new special.</li>
-                    <li><strong>Defend:</strong> Unlock slots and build towers on your base to repel attackers.</li>
+                    <li><strong>Defend:</strong> Unlock slots and build towers &mdash; you can only place them on YOUR half of the field &mdash; to repel attackers.</li>
                     <li><strong>Special Attacks:</strong> Buy your special, then upgrade it through 4 levels (Lv1 chips away, Lv4 is brutal). Fire it on a 40s cooldown to wipe a swarm.</li>
                     <li><strong>Range Upgrades:</strong> Pay to extend your ranged units' reach so they hit the enemy deeper in the line before it closes in.</li>
-                    <li><strong>Camera:</strong> Drag to pan, scroll to zoom, hit <code>FIT</code> (or <code>0</code>) to see the whole field. Hotkeys: <code>1</code>/<code>2</code>/<code>3</code> spawn, <code>E</code> evolve, <code>Space</code> special.</li>
+                    <li><strong>Camera:</strong> Drag the battlefield to move the orbit camera around the field. Hotkeys: <code>1</code>/<code>2</code>/<code>3</code> spawn, <code>E</code> evolve, <code>Space</code> special.</li>
                     <li><strong>Online:</strong> One player creates a match and shares the 4-letter code; the other joins. You always command the blue army on the left.</li>
                 </ul>
             </div>

@@ -1,16 +1,15 @@
 /**
- * Era Battle - Game Engine & Core Logic
- * Inspired by Age of War. All rights reserved for original concepts.
- * 
- * Architecture:
- * - Game: Core manager, holds state, lists, inputs, and canvas drawing.
- * - Base: Player & Enemy fortress. Handles HP and tower slots.
- * - Tower: Mounted base defenses that shoot projectiles at nearest enemies.
- * - Unit: Soldier instances, movements, collision, queuing, and animations.
- * - Projectile: Ranged attacks moving via linear or parabolic physics.
- * - SpecialAttack: Sweeping and dropping field effects.
- * - Particle: Combat gore, sparks, smoke, and floating text awards.
+ * Era Battle - Game Engine & Core Logic (top-down 3D lane edition).
+ * The simulation is authoritative and mostly 1D-per-lane; render3d.js is a pure
+ * reflection of this state. Every player gesture ends in a player*() call.
  */
+
+import {
+    VIRTUAL_WIDTH, VIRTUAL_HEIGHT, GROUND_Y, PLAYER_BASE_X, ENEMY_BASE_X, BASE_HP_MAX,
+    MIDLINE_X, TOWER_MARGIN, TOWER_MIN_SPACING,
+    LANE_BY_IDX, LANE_IDX, LANE_Z, LANE_Z_BY_IDX, LANE_HALF_WIDTH,
+    WORLD_Z_MIN, WORLD_Z_MAX, LANE_UNLOCK_COST, laneZOf, laneZ3, mapX, mapZ, S
+} from './world.js';
 
 // ==========================================================================
 // CONFIGURATION AND CONSTANTS
@@ -321,12 +320,8 @@ const ERA_DATA = [
     }
 ];
 
-const VIRTUAL_WIDTH = 1800;
-const VIRTUAL_HEIGHT = 400;
-const GROUND_Y = 340;
-const PLAYER_BASE_X = 100;
-const ENEMY_BASE_X = 1700;
-const BASE_HP_MAX = 2000;
+// Spatial constants (VIRTUAL_WIDTH/GROUND_Y/PLAYER_BASE_X/ENEMY_BASE_X/BASE_HP_MAX/...)
+// are imported from world.js so the sim and the 3D renderer never disagree.
 const SPECIAL_COOLDOWN_MS = 40000; // 40 seconds
 const TOWER_SLOT_COSTS = [150, 400, 1000];
 const TOWER_BUILD_COST = 250;
@@ -353,9 +348,11 @@ const UNIT3_UNLOCK_COST = 50;   // the heavy unit (slot 3) must be unlocked firs
 // ==========================================================================
 
 class Particle {
-    constructor(x, y, color, type = 'spark', text = '', customSize = null) {
+    constructor(x, y, color, type = 'spark', text = '', customSize = null, z = 450) {
         this.x = x;
         this.y = y;
+        this.z = z;            // lane depth for the 3D FX bridge
+        this._fx = false;      // set once the 3D renderer has spawned this effect
         this.color = color;
         this.type = type; // 'spark', 'blood', 'smoke', 'text', 'fire', 'laser'
         this.text = text;
@@ -441,9 +438,10 @@ class Particle {
 // ==========================================================================
 
 class Tower {
-    constructor(team, slotIndex) {
+    constructor(team, x, z) {
         this.team = team;
-        this.slotIndex = slotIndex; // 0, 1, or 2
+        this.x = x;
+        this.z = z;
         this.cooldownTimer = 0;
     }
 
@@ -451,35 +449,25 @@ class Tower {
         if (this.cooldownTimer > 0) {
             this.cooldownTimer -= dt;
         }
-        
+
         const era = this.team === 'player' ? game.playerEra : game.enemyEra;
         const eraConfig = ERA_DATA[era];
-        
+
         if (this.cooldownTimer <= 0) {
-            // Find target
+            // Radial targeting: nearest enemy unit within the tower's 2D radius (any lane)
             const enemies = this.team === 'player' ? game.enemyUnits : game.playerUnits;
-            const myBaseX = this.team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X;
-            
             let closestEnemy = null;
             let closestDist = eraConfig.towerRange;
-            
-            // Loop through enemies
+
             for (let enemy of enemies) {
-                const dist = Math.abs(enemy.x - myBaseX);
+                if (enemy.state === 'die') continue;
+                const dist = Math.hypot(enemy.x - this.x, (enemy.z ?? 450) - this.z);
                 if (dist < closestDist) {
                     closestDist = dist;
                     closestEnemy = enemy;
                 }
             }
-            
-            // Check if enemy base is in range (towers can't reach bases usually due to range, but check anyway)
-            const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
-            const enemyBaseX = this.team === 'player' ? ENEMY_BASE_X : PLAYER_BASE_X;
-            const baseDist = Math.abs(enemyBaseX - myBaseX);
-            if (!closestEnemy && baseDist < closestDist) {
-                closestEnemy = enemyBase;
-            }
-            
+
             if (closestEnemy) {
                 this.shoot(closestEnemy, game, eraConfig);
             }
@@ -488,25 +476,20 @@ class Tower {
 
     shoot(target, game, eraConfig) {
         this.cooldownTimer = eraConfig.towerCooldown;
-        
-        // Calculate spawn position on base
-        const myBaseX = this.team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X;
-        const towerX = this.team === 'player' ? myBaseX + 35 : myBaseX - 35;
-        const towerY = GROUND_Y - 90 - (this.slotIndex * 60);
-        
+
+        const towerY = GROUND_Y - 90;
         game.projectiles.push(new Projectile(
-            towerX,
+            this.x,
             towerY,
             target,
             this.team,
             eraConfig.towerDamage,
             eraConfig.towerProj,
-            2.5 // moderate speed multiplier
+            2.5, 0, this.z // moderate speed multiplier, lane depth
         ));
-        
-        // Firing flash particle
+
         const flashColor = this.team === 'player' ? '#60a5fa' : '#f87171';
-        game.particles.push(new Particle(towerX, towerY, flashColor, 'spark', '', 4));
+        game.particles.push(new Particle(this.x, towerY, flashColor, 'spark', '', 4));
     }
 
     draw(ctx, cameraX, game) {
@@ -812,17 +795,21 @@ class Base {
 // ==========================================================================
 
 class Projectile {
-    constructor(startX, startY, target, team, damage, type, speedMultiplier = 1.0, splashRadius = 0) {
+    constructor(startX, startY, target, team, damage, type, speedMultiplier = 1.0, splashRadius = 0, startZ = 450) {
         this.startX = startX;
         this.startY = startY;
+        this.startZ = startZ;
         this.x = startX;
         this.y = startY;
+        this.z = startZ;
         this.target = target; // Unit instance or Base instance
         this.team = team;
         this.damage = damage;
         this.type = type; // 'pebble', 'spear', 'arrow', 'bolt', 'firepot', 'bullet', 'grenade', 'shell', 'plasma'
         this.splashRadius = splashRadius; // >0 => area-of-effect (special attacks, missed lobs)
         this.t = 0; // Interpolation factor (0 to 1)
+        // Lane depth: fly straight in the lane unless the target has its own z
+        this.targetZ = (target && target.z !== undefined) ? target.z : startZ;
         
         // Speed scaling based on type
         let baseSpeed = 0.02;
@@ -857,11 +844,13 @@ class Projectile {
         if (this.target && this.target.hp > 0) {
             this.targetX = this.target.x;
             this.targetY = this.target.y - (this.target.height ? this.target.height / 2 : 50);
+            if (this.target.z !== undefined) this.targetZ = this.target.z;
         }
-        
+
         // Calculate coordinate
         this.x = this.startX + (this.targetX - this.startX) * this.t;
-        
+        this.z = this.startZ + (this.targetZ - this.startZ) * this.t;
+
         if (this.maxHeight > 0) {
             // Parabolic Arc
             this.y = this.startY + (this.targetY - this.startY) * this.t - this.maxHeight * Math.sin(this.t * Math.PI);
@@ -882,13 +871,14 @@ class Projectile {
         const enemies = this.team === 'player' ? game.enemyUnits : game.playerUnits;
         const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
 
+        // Base is a wall spanning all lanes -> distance measured on X only
         if (Math.abs(enemyBase.x - this.x) < r) {
             enemyBase.takeDamage(Math.round(this.damage * 0.5));
         }
         for (let i = enemies.length - 1; i >= 0; i--) {
             const unit = enemies[i];
             if (unit.state === 'die') continue;
-            const dist = Math.abs(unit.x - this.x);
+            const dist = Math.hypot(unit.x - this.x, (unit.z ?? 450) - (this.z ?? 450));
             if (dist < r) {
                 const falloff = 1 - (dist / r) * 0.4; // heavier damage near the epicenter
                 unit.takeDamage(Math.round(this.damage * falloff), game);
@@ -1058,7 +1048,12 @@ class Unit {
         // Spawning details
         this.y = GROUND_Y;
         this.x = team === 'player' ? PLAYER_BASE_X + 30 : ENEMY_BASE_X - 30;
-        
+
+        // Lane / depth (set properly by Game.addUnitFree)
+        this.lane = 'mid';
+        this.laneZ = LANE_Z.mid;
+        this.z = LANE_Z.mid;
+
         this.attackTimer = 0;
         this.state = 'walk'; // 'walk', 'attack', 'die'
         this.deathProgress = 0;
@@ -1156,7 +1151,9 @@ class Unit {
         
         for (let enemy of enemies) {
             if (enemy.state === 'die') continue;
-            
+            if (enemy.lane !== this.lane) continue; // combat is same-lane only
+            if (Math.abs((enemy.z ?? 450) - this.z) > LANE_HALF_WIDTH) continue;
+
             // Check direction relative to team
             const isAhead = this.team === 'player' ? (enemy.x > this.x) : (enemy.x < this.x);
             if (isAhead) {
@@ -1189,7 +1186,8 @@ class Unit {
         
         for (let mate of teammates) {
             if (mate === this || mate.state === 'die') continue;
-            
+            if (mate.lane !== this.lane) continue; // only block same-lane teammates
+
             const isAhead = this.team === 'player' ? (mate.x > this.x) : (mate.x < this.x);
             if (isAhead) {
                 const dist = Math.abs(mate.x - this.x) - (this.width / 2 + mate.width / 2);
@@ -1244,9 +1242,10 @@ class Unit {
                     this.target,
                     this.team,
                     this.damage,
-                    this.projectileType
+                    this.projectileType,
+                    1.0, 0, this.z
                 ));
-            } 
+            }
             else if (this.type === 'hitscan') {
                 // Instant bullet fire visual
                 const muzzleX = this.x + (this.width / 2) * this.facing;
@@ -1270,16 +1269,16 @@ class Unit {
                     this.team,
                     this.damage,
                     'plasma',
-                    1.8 // fast speed
+                    1.8, 0, this.z // fast speed
                 ));
             }
             else if (this.type === 'laser_heavy') {
                 // Heavy walker twin beams
                 const baseMuzzleY = this.y - this.height * 0.75;
                 const muzzleX = this.x + (this.width / 2) * this.facing;
-                
-                game.projectiles.push(new Projectile(muzzleX, baseMuzzleY - 10, this.target, this.team, Math.round(this.damage / 2), 'plasma', 2.0));
-                game.projectiles.push(new Projectile(muzzleX, baseMuzzleY + 10, this.target, this.team, Math.round(this.damage / 2), 'plasma', 2.0));
+
+                game.projectiles.push(new Projectile(muzzleX, baseMuzzleY - 10, this.target, this.team, Math.round(this.damage / 2), 'plasma', 2.0, 0, this.z));
+                game.projectiles.push(new Projectile(muzzleX, baseMuzzleY + 10, this.target, this.team, Math.round(this.damage / 2), 'plasma', 2.0, 0, this.z));
             }
         }
     }
@@ -1884,54 +1883,36 @@ class SpecialAttack {
         this.duration = type === 'orbitallaser' ? 3000 : (type === 'airstrike' ? 2500 : 2000);
         this.isDead = false;
         
-        // Spawn elements based on type
+        // Scatter across the OPPONENT's half, spanning all lanes (z)
         this.projectilesToSpawn = [];
-        this.airstrikePlaneX = team === 'player' ? 0 : VIRTUAL_WIDTH;
-        
+        const xLo = team === 'player' ? ENEMY_BASE_X - 720 : PLAYER_BASE_X + 220;
+        const xHi = team === 'player' ? ENEMY_BASE_X - 220 : PLAYER_BASE_X + 720;
+        const rx = () => xLo + Math.random() * (xHi - xLo);
+        const rz = () => WORLD_Z_MIN + Math.random() * (WORLD_Z_MAX - WORLD_Z_MIN);
+
         if (type === 'meteor') {
-            for (let i = 0; i < 15; i++) {
-                this.projectilesToSpawn.push({
-                    delay: i * 120,
-                    x: (team === 'player' ? ENEMY_BASE_X - 700 : PLAYER_BASE_X + 200) + Math.random() * 500,
-                    y: 0,
-                    spawned: false
-                });
-            }
-        } 
-        else if (type === 'arrows') {
-            for (let i = 0; i < 50; i++) {
-                this.projectilesToSpawn.push({
-                    delay: i * 35,
-                    x: (team === 'player' ? ENEMY_BASE_X - 800 : PLAYER_BASE_X + 100) + Math.random() * 700,
-                    y: 0,
-                    spawned: false
-                });
-            }
-        } 
-        else if (type === 'fireball') {
-            for (let i = 0; i < 8; i++) {
-                this.projectilesToSpawn.push({
-                    delay: i * 220,
-                    x: (team === 'player' ? ENEMY_BASE_X - 600 : PLAYER_BASE_X + 200) + Math.random() * 450,
-                    y: 0,
-                    spawned: false
-                });
-            }
-        }
-        else if (type === 'airstrike') {
-            // Bombs logic scheduled along plane trajectory
+            for (let i = 0; i < 15; i++) this.projectilesToSpawn.push({ delay: i * 120, x: rx(), z: rz(), spawned: false });
+        } else if (type === 'arrows') {
+            for (let i = 0; i < 50; i++) this.projectilesToSpawn.push({ delay: i * 35, x: rx(), z: rz(), spawned: false });
+        } else if (type === 'fireball') {
+            for (let i = 0; i < 8; i++) this.projectilesToSpawn.push({ delay: i * 220, x: rx(), z: rz(), spawned: false });
+        } else if (type === 'airstrike') {
+            // Carpet-bomb one random lane
+            this.laneZ = LANE_Z_BY_IDX[Math.floor(Math.random() * 3)];
             for (let i = 0; i < 8; i++) {
                 this.projectilesToSpawn.push({
                     delay: 500 + i * 200,
                     x: team === 'player' ? (PLAYER_BASE_X + 300 + i * 140) : (ENEMY_BASE_X - 300 - i * 140),
-                    y: 80,
-                    spawned: false
+                    z: this.laneZ, spawned: false
                 });
             }
-        }
-        else if (type === 'orbitallaser') {
-            // Sweeping laser coordinate
-            this.laserX = team === 'player' ? PLAYER_BASE_X + 200 : ENEMY_BASE_X - 200;
+            this.airstrikePlaneX = team === 'player' ? 0 : VIRTUAL_WIDTH;
+            this.x = this.airstrikePlaneX; this.z = this.laneZ;
+        } else if (type === 'orbitallaser') {
+            // Beam parked in enemy territory, sweeping across the lanes (z)
+            this.laserX = team === 'player' ? ENEMY_BASE_X - 420 : PLAYER_BASE_X + 420;
+            this.laserZ = WORLD_Z_MIN;
+            this.x = this.laserX; this.z = this.laserZ;
         }
     }
 
@@ -1948,78 +1929,52 @@ class SpecialAttack {
         for (let item of this.projectilesToSpawn) {
             if (!item.spawned && this.timer >= item.delay) {
                 item.spawned = true;
-                this.triggerFall(item.x, item.y, game);
+                this.triggerFall(item.x, item.z, game);
             }
         }
-        
-        // Type specific frames
+
         if (this.type === 'airstrike') {
-            const pathDistance = VIRTUAL_WIDTH;
-            const planeSpeed = (pathDistance / (this.duration / 1000)) * (dt / 1000);
-            if (this.team === 'player') {
-                this.airstrikePlaneX += planeSpeed;
-            } else {
-                this.airstrikePlaneX -= planeSpeed;
-            }
-        } 
+            const planeSpeed = (VIRTUAL_WIDTH / (this.duration / 1000)) * (dt / 1000);
+            this.airstrikePlaneX += (this.team === 'player' ? planeSpeed : -planeSpeed);
+            this.x = this.airstrikePlaneX;
+        }
         else if (this.type === 'orbitallaser') {
-            // Sweeps across the map
-            const targetWidth = VIRTUAL_WIDTH - 400;
-            const sweepSpeed = (targetWidth / (this.duration / 1000)) * (dt / 1000);
-            
-            if (this.team === 'player') {
-                this.laserX += sweepSpeed;
-            } else {
-                this.laserX -= sweepSpeed;
-            }
-            
-            // Laser ticks damage every frame on intersection
-            const laserRadius = 50;
+            // Sweep the beam across the lanes (z) at a fixed x
+            const sweep = ((WORLD_Z_MAX - WORLD_Z_MIN) / (this.duration / 1000)) * (dt / 1000);
+            this.laserZ += sweep;
+            this.z = this.laserZ; this.x = this.laserX;
+
+            const laserRadius = 75;
             const enemies = this.team === 'player' ? game.enemyUnits : game.playerUnits;
             const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
-            
-            if (Math.abs(enemyBase.x - this.laserX) < laserRadius) {
-                enemyBase.takeDamage(Math.round(4 * this.dmgMult)); // heavy damage over time
-            }
 
+            if (Math.abs(enemyBase.x - this.laserX) < laserRadius) {
+                enemyBase.takeDamage(Math.round(4 * this.dmgMult));
+            }
             for (let unit of enemies) {
-                if (Math.abs(unit.x - this.laserX) < laserRadius) {
+                if (unit.state === 'die') continue;
+                if (Math.hypot(unit.x - this.laserX, (unit.z ?? 450) - this.laserZ) < laserRadius) {
                     unit.takeDamage(Math.round(8 * this.dmgMult), game);
                 }
             }
-            
-            // Neon laser sparks spawning from ground
             if (Math.random() < 0.8) {
                 game.particles.push(new Particle(this.laserX + (Math.random() - 0.5) * 20, GROUND_Y, '#38bdf8', 'spark', '', 4));
-                game.particles.push(new Particle(this.laserX + (Math.random() - 0.5) * 20, GROUND_Y, '#0284c7', 'smoke', '', 6));
             }
         }
     }
 
-    triggerFall(targetX, startY, game) {
-        // Create falling projectile with generic coordinate targets
-        const dummyTarget = { x: targetX, y: GROUND_Y, hp: 1 };
-        
+    triggerFall(targetX, targetZ, game) {
+        // Falling projectile aimed at a ground point (x, z); flies straight in z.
+        const dummyTarget = { x: targetX, y: GROUND_Y, z: targetZ, hp: 1 };
         const m = this.dmgMult;
         if (this.type === 'meteor') {
-            // Large boulder falling diagonally
-            const startX = targetX - 100;
-            const startY = -50;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, Math.round(45 * m), 'firepot', 0.8, 80));
-        }
-        else if (this.type === 'arrows') {
-            const startX = targetX - 80;
-            const startY = -40;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, Math.round(18 * m), 'arrow', 1.3, 35));
-        }
-        else if (this.type === 'fireball') {
-            const startX = targetX - 120;
-            const startY = -50;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, Math.round(95 * m), 'firepot', 0.6, 95));
-        }
-        else if (this.type === 'airstrike') {
-            // Carpet Bomb dropped vertically down from current plane
-            game.projectiles.push(new Projectile(targetX, startY, dummyTarget, this.team, Math.round(250 * m), 'firepot', 1.5, 90));
+            game.projectiles.push(new Projectile(targetX - 100, -50, dummyTarget, this.team, Math.round(45 * m), 'firepot', 0.8, 80, targetZ));
+        } else if (this.type === 'arrows') {
+            game.projectiles.push(new Projectile(targetX - 80, -40, dummyTarget, this.team, Math.round(18 * m), 'arrow', 1.3, 35, targetZ));
+        } else if (this.type === 'fireball') {
+            game.projectiles.push(new Projectile(targetX - 120, -50, dummyTarget, this.team, Math.round(95 * m), 'firepot', 0.6, 95, targetZ));
+        } else if (this.type === 'airstrike') {
+            game.projectiles.push(new Projectile(targetX, 80, dummyTarget, this.team, Math.round(250 * m), 'firepot', 1.5, 90, targetZ));
         }
     }
 
@@ -2097,24 +2052,21 @@ function safeInt(n) {
     return Number.isFinite(n) ? n : 0;
 }
 
+// '#rrggbb' -> 0xRRGGBB for three.js colors
+function hexToInt(str) {
+    if (typeof str !== 'string') return 0xffffff;
+    const h = str.replace('#', '');
+    const n = parseInt(h, 16);
+    return Number.isFinite(n) ? n : 0xffffff;
+}
+
 function el(id) { return document.getElementById(id); }
 
 class Game {
     constructor() {
         this.canvas = el("gameCanvas");
-        this.ctx = this.canvas.getContext("2d");
-        this.dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-
-        // Camera / view state
-        this.cameraX = 0;
-        this.cameraVelocity = 0;
-        this.zoom = 1;
-        this.isDragging = false;
-        this.dragMoved = false;
-        this.dragStartX = 0;
-        this.dragCameraStartX = 0;
-        this.viewW = 960;
-        this.viewH = 420;
+        this.r3d = null;            // 3D renderer (lazy-loaded in startMatch)
+        this.interaction = null;    // pointer interaction controller
 
         // Multiplayer state
         this.mode = 'solo';        // 'solo' | 'host' | 'guest'
@@ -2148,18 +2100,7 @@ class Game {
     // ----------------------------------------------------------------------
 
     resize() {
-        this.dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-        const wrap = el("canvas-wrapper");
-        const rect = wrap.getBoundingClientRect();
-        this.viewW = Math.max(320, Math.floor(rect.width));
-        this.viewH = Math.max(220, Math.floor(rect.height));
-        this.canvas.width = Math.floor(this.viewW * this.dpr);
-        this.canvas.height = Math.floor(this.viewH * this.dpr);
-        this.canvas.style.width = this.viewW + "px";
-        this.canvas.style.height = this.viewH + "px";
-        this.zoom = this.clampZoom(this.zoom);
-        this.clampCamera();
-        this.updateZoomLabel();
+        if (this.r3d) this.r3d.resize();
     }
 
     zoomMin() { return Math.min(1, this.viewW / VIRTUAL_WIDTH); }
@@ -2269,6 +2210,13 @@ class Game {
         this.playerUnit3Unlocked = false;
         this.enemyUnit3Unlocked = false;
 
+        // Lanes: mid open by default; top/bottom bought to unlock (per side)
+        this.laneUnlocked = {
+            player: { mid: true, top: false, bottom: false },
+            enemy: { mid: true, top: false, bottom: false }
+        };
+        this.selectedLane = 'mid';
+
         this.playerBase = new Base('player');
         this.enemyBase = new Base('enemy');
 
@@ -2351,9 +2299,10 @@ class Game {
         return team === 'player' ? this.playerUnit3Unlocked : this.enemyUnit3Unlocked;
     }
 
-    trySpawn(team, index) {
+    trySpawn(team, index, lane = 'mid') {
         // Heavy unit gated behind a one-time unlock
         if (index === 2 && !this.isUnit3Unlocked(team)) return false;
+        if (!this.laneUnlocked[team][lane]) return false; // lane must be open
         const tier = (team === 'player' ? this.playerUnitTier : this.enemyUnitTier)[index];
         const stats = ERA_DATA[tier].units[index];
         if (!stats) return false;
@@ -2366,18 +2315,41 @@ class Game {
             this.enemyGold -= stats.cost;
             this.enemyStatsSpawned++;
         }
-        this.addUnitFree(team, tier, index);
+        this.addUnitFree(team, tier, index, lane);
         return true;
     }
 
-    addUnitFree(team, tier, index) {
+    addUnitFree(team, tier, index, lane = 'mid') {
         const stats = ERA_DATA[tier].units[index];
         const u = new Unit(tier, index, team, stats);
         u.id = this.nextUnitId++;
+        u.lane = lane;
+        // deterministic ±20 spread within the lane so units don't perfectly overlap
+        u.zJitter = ((u.id * 53) % 41) - 20;
+        u.laneZ = laneZOf(lane) + u.zJitter;
+        u.z = u.laneZ;
         (team === 'player' ? this.playerUnits : this.enemyUnits).push(u);
         const gx = team === 'player' ? PLAYER_BASE_X + 30 : ENEMY_BASE_X - 30;
         this.particles.push(new Particle(gx, GROUND_Y - 20, '#cbd5e1', 'smoke'));
         return u;
+    }
+
+    // ---- Lane unlock (top / bottom) ----
+    unlockLane(team, lane) {
+        if (lane === 'mid' || this.laneUnlocked[team][lane]) return;
+        if (team === 'player') {
+            if (this.gold < LANE_UNLOCK_COST) return;
+            this.gold -= LANE_UNLOCK_COST;
+            this.laneUnlocked.player[lane] = true;
+            const z = laneZOf(lane);
+            for (let i = 0; i < 20; i++) this.particles.push(new Particle(PLAYER_BASE_X + 90, GROUND_Y - 40 - Math.random() * 60, '#fbbf24', 'spark', '', 5));
+            this.particles.push(new Particle(PLAYER_BASE_X + 90, GROUND_Y - 60, '#fbbf24', 'text', lane.toUpperCase() + ' LANE OPEN!', 16));
+            this.updateButtonsUI();
+        } else {
+            if (this.enemyGold < LANE_UNLOCK_COST) return;
+            this.enemyGold -= LANE_UNLOCK_COST;
+            this.laneUnlocked.enemy[lane] = true;
+        }
     }
 
     unlockUnit3(team) {
@@ -2490,36 +2462,61 @@ class Game {
         if (team === 'player') this.updateButtonsUI();
     }
 
-    buildTower(team) {
+    // Is (x,z) a legal tower spot for this team? (own half only, in bounds, spaced)
+    towerSpotValid(team, x, z) {
+        if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
+        if (z < WORLD_Z_MIN || z > WORLD_Z_MAX) return false;
+        // own half only
+        if (team === 'player' && x > MIDLINE_X - TOWER_MARGIN) return false;
+        if (team === 'enemy' && x < MIDLINE_X + TOWER_MARGIN) return false;
+        if (x < PLAYER_BASE_X + 40 || x > ENEMY_BASE_X - 40) return false;
         const base = team === 'player' ? this.playerBase : this.enemyBase;
-        if (base.towers.length >= base.unlockedSlots) return;
+        for (const t of base.towers) {
+            if (Math.hypot(t.x - x, t.z - z) < TOWER_MIN_SPACING) return false;
+        }
+        return true;
+    }
+
+    buildTower(team, x, z) {
+        const base = team === 'player' ? this.playerBase : this.enemyBase;
+        if (base.towers.length >= base.unlockedSlots) return false;
+        if (!this.towerSpotValid(team, x, z)) return false;
         if (team === 'player') {
-            if (this.gold < TOWER_BUILD_COST) return;
+            if (this.gold < TOWER_BUILD_COST) return false;
             this.gold -= TOWER_BUILD_COST;
         } else {
-            if (this.enemyGold < TOWER_BUILD_COST) return;
+            if (this.enemyGold < TOWER_BUILD_COST) return false;
             this.enemyGold -= TOWER_BUILD_COST;
         }
-        const idx = base.towers.length;
-        base.towers.push(new Tower(team, idx));
-        this.particles.push(new Particle((team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X) + 35, GROUND_Y - 90 - (idx * 60), '#fbbf24', 'spark', '', 6));
+        base.towers.push(new Tower(team, x, z));
+        for (let i = 0; i < 8; i++) this.particles.push(new Particle(x + (Math.random() - 0.5) * 20, GROUND_Y - 40 - Math.random() * 40, '#fbbf24', 'spark', '', 6));
         if (team === 'player') this.updateButtonsUI();
+        return true;
     }
 
     // ----------------------------------------------------------------------
     // PLAYER INPUT ROUTING (guest forwards commands to the host)
     // ----------------------------------------------------------------------
 
-    playerSpawn(index) {
+    playerSpawn(index, lane = null) {
         if (this.gameState !== 'running') return;
-        // Heavy unit: while locked, the button acts as the unlock button
+        // Heavy unit: while locked, unlock it first
         if (index === 2 && !this.playerUnit3Unlocked) {
             if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'unlock' }); return; }
             this.unlockUnit3('player');
             return;
         }
-        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'spawn', i: index }); return; }
-        this.trySpawn('player', index);
+        lane = lane || this.selectedLane || 'mid';
+        if (!this.laneUnlocked.player[lane]) return; // locked lane
+        this.selectedLane = lane;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'spawn', i: index, l: LANE_IDX[lane] }); return; }
+        this.trySpawn('player', index, lane);
+    }
+    playerOpenLane(lane) {
+        if (this.gameState !== 'running' || lane === 'mid') return;
+        if (this.laneUnlocked.player[lane]) return;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'lane', l: LANE_IDX[lane] }); return; }
+        this.unlockLane('player', lane);
     }
     playerEvolveUnit(index) {
         if (this.gameState !== 'running') return;
@@ -2536,10 +2533,10 @@ class Game {
         if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'slot' }); return; }
         this.buyTowerSlot('player');
     }
-    playerBuildTower() {
-        if (this.gameState !== 'running') return;
-        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'tower' }); return; }
-        this.buildTower('player');
+    playerBuildTower(x, z) {
+        if (this.gameState !== 'running') return false;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'tower', x: Math.round(x), z: Math.round(z) }); return true; }
+        return this.buildTower('player', x, z);
     }
     playerUpgradeSpecial() {
         if (this.gameState !== 'running') return;
@@ -2555,12 +2552,19 @@ class Game {
     onGuestCommand(cmd) {
         if (this.mode !== 'host' || this.gameState !== 'running' || !cmd) return;
         switch (cmd.a) {
-            case 'spawn': this.trySpawn('enemy', cmd.i | 0); break;
+            case 'spawn': this.trySpawn('enemy', cmd.i | 0, LANE_BY_IDX[cmd.l | 0] || 'mid'); break;
             case 'unlock': this.unlockUnit3('enemy'); break;
+            case 'lane': this.unlockLane('enemy', LANE_BY_IDX[cmd.l | 0] || 'mid'); break;
             case 'evolveu': this.evolveUnit('enemy', cmd.i | 0); break;
             case 'special': this.triggerSpecial('enemy'); break;
             case 'slot': this.buyTowerSlot('enemy'); break;
-            case 'tower': this.buildTower('enemy'); break;
+            case 'tower': {
+                // guest sends its own (mirrored) coords -> un-mirror to host space, then validate
+                const hx = VIRTUAL_WIDTH - (cmd.x | 0);
+                const hz = cmd.z | 0;
+                this.buildTower('enemy', hx, hz);
+                break;
+            }
             case 'upspecial': this.upgradeSpecial('enemy'); break;
             case 'uprange': this.upgradeRange('enemy'); break;
         }
@@ -2666,6 +2670,17 @@ class Game {
             sCost.innerText = `${SPECIAL_UPGRADE_COSTS[this.specialLevel]}g`;
             sStat.innerText = `Power ×${SPECIAL_LEVEL_MULT[this.specialLevel + 1]}`;
         }
+
+        // Lane HUD pills
+        for (const laneName of ['top', 'mid', 'bottom']) {
+            const pill = el('lane-' + laneName);
+            if (!pill) continue;
+            const open = this.laneUnlocked.player[laneName];
+            pill.classList.toggle('locked', !open);
+            pill.classList.toggle('selected', open && this.selectedLane === laneName);
+            const cost = pill.querySelector('.lane-cost');
+            if (cost) cost.innerText = open ? '' : `🔒 ${LANE_UNLOCK_COST}g`;
+        }
     }
 
     updateAffordance() {
@@ -2749,9 +2764,19 @@ class Game {
         this.enemySpecialLevel = Math.min(MAX_SPECIAL_LEVEL, 1 + this.enemyEra);
         this.enemyRangeLevel = Math.min(MAX_RANGE_LEVEL, this.enemyEra);
 
+        // AI opens extra lanes over time
+        if (!this.laneUnlocked.enemy.top && this.timeElapsed > 60) this.laneUnlocked.enemy.top = true;
+        if (!this.laneUnlocked.enemy.bottom && this.timeElapsed > 150) this.laneUnlocked.enemy.bottom = true;
+
+        // AI builds towers on its own half (radial), a few over time
         if (this.enemyBase.unlockedSlots < 3 && this.timeElapsed > (this.enemyBase.unlockedSlots * 120 + 60)) {
             this.enemyBase.unlockedSlots++;
-            this.enemyBase.towers.push(new Tower('enemy', this.enemyBase.towers.length));
+        }
+        if (this.enemyBase.towers.length < this.enemyBase.unlockedSlots) {
+            const laneIdx = this.enemyBase.towers.length % 3;
+            const tz = LANE_Z_BY_IDX[laneIdx];
+            const tx = ENEMY_BASE_X - 180 - this.enemyBase.towers.length * 40;
+            if (this.towerSpotValid('enemy', tx, tz)) this.enemyBase.towers.push(new Tower('enemy', tx, tz));
         }
 
         this.enemyAiTimer -= dt;
@@ -2764,7 +2789,10 @@ class Game {
             if (rand > 0.85) unitIndex = 2;
             else if (rand > 0.50) unitIndex = 1;
 
-            this.addUnitFree('enemy', this.enemyUnitTier[unitIndex], unitIndex);
+            // pick a random unlocked lane
+            const open = ['mid', 'top', 'bottom'].filter(l => this.laneUnlocked.enemy[l]);
+            const lane = open[Math.floor(Math.random() * open.length)] || 'mid';
+            this.addUnitFree('enemy', this.enemyUnitTier[unitIndex], unitIndex, lane);
 
             if (this.playerUnits.length >= 4 && Math.random() < 0.25) {
                 this.triggerSpecial('enemy');
@@ -2777,7 +2805,6 @@ class Game {
     // ----------------------------------------------------------------------
 
     update(dt) {
-        this.updateCamera(dt);
         if (this.gameState !== 'running') return;
 
         if (this.mode === 'guest') { this.updateGuest(dt); return; }
@@ -2845,6 +2872,7 @@ class Game {
         const k = 1 - Math.pow(1 - NET_LERP, dt / 16.666);
         for (const [, nu] of this.netUnits) {
             nu.unit.x += (nu.tx - nu.unit.x) * k;
+            if (nu.tz !== undefined) nu.unit.z += (nu.tz - nu.unit.z) * k;
             if (nu.unit.state === 'walk' && !nu.unit.isBlocked) {
                 nu.unit.animTimer += nu.unit.speed * 0.15 * (dt / 16.666);
             }
@@ -2871,17 +2899,21 @@ class Game {
 
     broadcastSnapshot() {
         const u = [];
-        for (const un of this.playerUnits) u.push([un.id, 'p', un.era, un.typeIndex, safeInt(un.x), safeInt(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
-        for (const un of this.enemyUnits) u.push([un.id, 'e', un.era, un.typeIndex, safeInt(un.x), safeInt(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
+        for (const un of this.playerUnits) u.push([un.id, 'p', un.era, un.typeIndex, safeInt(un.x), safeInt(un.z), LANE_IDX[un.lane] || 0, safeInt(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
+        for (const un of this.enemyUnits) u.push([un.id, 'e', un.era, un.typeIndex, safeInt(un.x), safeInt(un.z), LANE_IDX[un.lane] || 0, safeInt(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
 
         const p = [];
-        for (const pr of this.projectiles) p.push([safeInt(pr.x), safeInt(pr.y), pr.type, pr.team]);
+        for (const pr of this.projectiles) p.push([safeInt(pr.x), safeInt(pr.y), safeInt(pr.z ?? 450), pr.type, pr.team]);
 
         const s = [];
         for (const sa of this.specialAttacks) {
-            if (sa.type === 'airstrike') s.push(['airstrike', sa.team, Math.round(sa.airstrikePlaneX)]);
-            else if (sa.type === 'orbitallaser') s.push(['orbitallaser', sa.team, Math.round(sa.laserX)]);
+            if (sa.type === 'airstrike') s.push(['airstrike', sa.team, safeInt(sa.x ?? sa.airstrikePlaneX), safeInt(sa.z ?? 450)]);
+            else if (sa.type === 'orbitallaser') s.push(['orbitallaser', sa.team, safeInt(sa.x ?? sa.laserX), safeInt(sa.z ?? sa.laserZ ?? 450)]);
         }
+
+        const tw = [];
+        for (const t of this.playerBase.towers) tw.push(['p', safeInt(t.x), safeInt(t.z), this.playerEra]);
+        for (const t of this.enemyBase.towers) tw.push(['e', safeInt(t.x), safeInt(t.z), this.enemyEra]);
 
         this.net && this.net.sendSnapshot({
             tm: Date.now(),
@@ -2890,14 +2922,15 @@ class Game {
             pg: Math.round(this.gold),
             eg: Math.round(this.enemyGold),
             pst: Math.round(this.specialTimer), est: Math.round(this.enemySpecialTimer),
-            pt: this.playerBase.towers.length, et: this.enemyBase.towers.length,
             pus: this.playerBase.unlockedSlots, eus: this.enemyBase.unlockedSlots,
             es: this.enemyStatsSpawned, ek: this.enemyStatsKilled, egn: Math.round(this.enemyStatsGold),
             psl: this.specialLevel, esl: this.enemySpecialLevel,
             prl: this.rangeLevel, erl: this.enemyRangeLevel,
             put: this.playerUnitTier, eut: this.enemyUnitTier,
             pu3: this.playerUnit3Unlocked, eu3: this.enemyUnit3Unlocked,
-            u, p, s,
+            plu: [!!this.laneUnlocked.player.mid, !!this.laneUnlocked.player.top, !!this.laneUnlocked.player.bottom],
+            elu: [!!this.laneUnlocked.enemy.mid, !!this.laneUnlocked.enemy.top, !!this.laneUnlocked.enemy.bottom],
+            u, p, s, tw,
             st: this.gameState,
             win: this.winner
         });
@@ -2925,6 +2958,12 @@ class Game {
         this.playerUnit3Unlocked = !!snap.eu3;
         this.enemyUnit3Unlocked = !!snap.pu3;
 
+        // Lanes: guest's own = enemy fields (elu); opponent = plu
+        const elu = snap.elu || [true, false, false];
+        const plu = snap.plu || [true, false, false];
+        this.laneUnlocked.player = { mid: !!elu[0], top: !!elu[1], bottom: !!elu[2] };
+        this.laneUnlocked.enemy = { mid: !!plu[0], top: !!plu[1], bottom: !!plu[2] };
+
         // Guest's own end-of-match stats (tracked authoritatively by the host)
         this.statsSpawned = snap.es || 0;
         this.statsKilled = snap.ek || 0;
@@ -2934,8 +2973,16 @@ class Game {
         this.enemyBase.hp = snap.ph;
         this.playerBase.unlockedSlots = snap.eus;
         this.enemyBase.unlockedSlots = snap.pus;
-        this.setTowerCount(this.playerBase, 'player', snap.et);
-        this.setTowerCount(this.enemyBase, 'enemy', snap.pt);
+
+        // Towers rebuilt from tw[] (mirror x, keep z). guest own = host 'e' towers.
+        this.playerBase.towers = [];
+        this.enemyBase.towers = [];
+        for (const arr of (snap.tw || [])) {
+            const [tc, tx, tz] = arr;
+            const gTeam = tc === 'e' ? 'player' : 'enemy';
+            const tw = new Tower(gTeam, VIRTUAL_WIDTH - tx, tz);
+            (gTeam === 'player' ? this.playerBase : this.enemyBase).towers.push(tw);
+        }
 
         // HUD (mirrored: "Your Base" = the host's enemy base)
         el("gold-value").innerText = Math.round(this.gold);
@@ -2946,34 +2993,33 @@ class Game {
         el("current-era-text").innerText = ERA_DATA[this.playerEra].name;
         this.updateButtonsUI();
 
-        // Units — mirror host-space into guest-space
+        // Units — mirror x into guest-space, keep z + lane
         const seen = new Set();
         for (const arr of snap.u) {
-            const [id, team, era, ti, x, hp, st, f] = arr;
+            const [id, team, era, ti, x, z, laneIdx, hp, st, f] = arr;
             seen.add(id);
             const gTeam = team === 'e' ? 'player' : 'enemy'; // guest's own units are host's 'enemy'
             const gx = VIRTUAL_WIDTH - x;
+            const gz = z;
             const gf = -f;
+            const gLane = LANE_BY_IDX[laneIdx] || 'mid';
             let nu = this.netUnits.get(id);
             if (!nu) {
                 const stats = ERA_DATA[era].units[ti];
                 const unit = new Unit(era, ti, gTeam, stats);
-                unit.id = id;
-                unit.x = gx;
-                unit.facing = gf;
-                nu = { unit, tx: gx };
+                unit.id = id; unit.x = gx; unit.z = gz; unit.lane = gLane; unit.facing = gf;
+                nu = { unit, tx: gx, tz: gz };
                 this.netUnits.set(id, nu);
             }
             const unit = nu.unit;
-            if (hp < unit.hp && unit.state !== 'die') this.spawnHitFx(gx, unit.height);
+            if (hp < unit.hp && unit.state !== 'die') this.spawnHitFx(gx, unit.height, gz);
             if (st === 'die' && unit.state !== 'die') {
-                this.spawnDeathFx(gx, unit.height);
-                // "+Xg" when the guest kills an opponent unit (host's 'player' = guest's 'enemy')
-                if (gTeam === 'enemy') this.spawnBountyFx(gx, unit.height, era, ti);
+                this.spawnDeathFx(gx, unit.height, gz);
+                if (gTeam === 'enemy') this.spawnBountyFx(gx, unit.height, era, ti, gz);
             }
-            unit.era = era; unit.typeIndex = ti; unit.team = gTeam;
+            unit.era = era; unit.typeIndex = ti; unit.team = gTeam; unit.lane = gLane;
             unit.hp = hp; unit.state = st; unit.facing = gf;
-            nu.tx = gx;
+            nu.tx = gx; nu.tz = gz;
             if (st === 'die') nu.remove = true;
         }
         for (const [, nu] of this.netUnits) {
@@ -2981,18 +3027,18 @@ class Game {
                 nu.remove = true;
                 if (nu.unit.state !== 'die') {
                     nu.unit.state = 'die';
-                    this.spawnDeathFx(nu.unit.x, nu.unit.height);
-                    if (nu.unit.team === 'enemy') this.spawnBountyFx(nu.unit.x, nu.unit.height, nu.unit.era, nu.unit.typeIndex);
+                    this.spawnDeathFx(nu.unit.x, nu.unit.height, nu.unit.z);
+                    if (nu.unit.team === 'enemy') this.spawnBountyFx(nu.unit.x, nu.unit.height, nu.unit.era, nu.unit.typeIndex, nu.unit.z);
                 }
             }
         }
 
-        // Projectiles / specials — mirror and relabel team
-        this.netProjectiles = snap.p.map(([x, y, type, team]) => ({
-            x: VIRTUAL_WIDTH - x, y, type, team: team === 'player' ? 'enemy' : 'player'
+        // Projectiles / specials — mirror x, keep z
+        this.netProjectiles = (snap.p || []).map(([x, y, z, type, team]) => ({
+            x: VIRTUAL_WIDTH - x, y, z, type, team: team === 'player' ? 'enemy' : 'player'
         }));
-        this.netSpecials = snap.s.map(([type, team, x]) => ({
-            type, team: team === 'player' ? 'enemy' : 'player', x: VIRTUAL_WIDTH - x
+        this.netSpecials = (snap.s || []).map(([type, team, x, z]) => ({
+            type, team: team === 'player' ? 'enemy' : 'player', x: VIRTUAL_WIDTH - x, z
         }));
 
         // End of match (host-authoritative result)
@@ -3008,141 +3054,59 @@ class Game {
         while (base.towers.length > count) base.towers.pop();
     }
 
-    spawnHitFx(x, height) {
-        this.particles.push(new Particle(x + (Math.random() - 0.5) * 10, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood'));
+    spawnHitFx(x, height, z = 450) {
+        this.particles.push(new Particle(x + (Math.random() - 0.5) * 10, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood', '', null, z));
     }
-    spawnDeathFx(x, height) {
-        for (let i = 0; i < 4; i++) this.particles.push(new Particle(x + (Math.random() - 0.5) * 12, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood'));
-        this.particles.push(new Particle(x, GROUND_Y - 20, '#cbd5e1', 'smoke'));
+    spawnDeathFx(x, height, z = 450) {
+        for (let i = 0; i < 4; i++) this.particles.push(new Particle(x + (Math.random() - 0.5) * 12, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood', '', null, z));
+        this.particles.push(new Particle(x, GROUND_Y - 20, '#cbd5e1', 'smoke', '', null, z));
     }
-    spawnBountyFx(x, height, era, ti) {
+    spawnBountyFx(x, height, era, ti, z = 450) {
         const reward = (ERA_DATA[era] && ERA_DATA[era].units[ti] || {}).goldReward || 0;
-        this.particles.push(new Particle(x, GROUND_Y - (height || 40) - 12, '#fbbf24', 'text', `+${reward}g`, 15));
+        this.particles.push(new Particle(x, GROUND_Y - (height || 40) - 12, '#fbbf24', 'text', `+${reward}g`, 15, z));
     }
 
     // ----------------------------------------------------------------------
     // RENDERING
     // ----------------------------------------------------------------------
 
-    draw() {
-        const ctx = this.ctx;
-        const z = this.zoom;
-        const cfg = ERA_DATA[this.playerEra];
-
-        // Letterbox fill (device pixels)
-        ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-        ctx.fillStyle = cfg.skyGradient[0];
-        ctx.fillRect(0, 0, this.viewW, this.viewH);
-
-        // World transform: screen = ((x - cameraX) * z, y * z + offY) * dpr.
-        // When the world is taller than the view, bottom-align to the GROUND line
-        // (plus a little dirt) rather than the empty world bottom — all the action
-        // sits just above GROUND_Y, so this reclaims the otherwise-wasted band.
-        const offY = this.getOffY();
-        ctx.setTransform(this.dpr * z, 0, 0, this.dpr * z, 0, this.dpr * offY);
-
-        const vw = this.visibleWorldW();
-
-        // Sky gradient
-        const grad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
-        grad.addColorStop(0, cfg.skyGradient[0]);
-        grad.addColorStop(1, cfg.skyGradient[1]);
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, vw, GROUND_Y);
-
-        this.drawParallaxScenery(cfg);
-
-        // Ground
-        ctx.fillStyle = cfg.groundColor;
-        ctx.fillRect(0, GROUND_Y, vw, VIRTUAL_HEIGHT - GROUND_Y);
-        ctx.strokeStyle = '#1e293b';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(0, GROUND_Y);
-        ctx.lineTo(vw, GROUND_Y);
-        ctx.stroke();
-
-        // Entities
-        this.playerBase.draw(ctx, this.cameraX, this);
-        this.enemyBase.draw(ctx, this.cameraX, this);
-
+    draw(dt) {
+        const r = this.r3d;
+        if (!r) return;
+        r.setEra(this.playerEra, this.enemyEra);
         if (this.mode === 'guest') {
-            for (const [, nu] of this.netUnits) nu.unit.draw(ctx, this.cameraX);
-            for (const pr of this.netProjectiles) {
-                const o = Object.create(Projectile.prototype);
-                o.x = pr.x; o.y = pr.y; o.type = pr.type; o.team = pr.team;
-                o.draw(ctx, this.cameraX);
-            }
-            for (const sp of this.netSpecials) {
-                const o = Object.create(SpecialAttack.prototype);
-                o.type = sp.type; o.team = sp.team; o.airstrikePlaneX = sp.x; o.laserX = sp.x;
-                o.draw(ctx, this.cameraX);
-            }
+            r.syncUnits([...this.netUnits.values()].map(n => n.unit));
+            r.syncProjectiles(this.netProjectiles, false);
+            r.syncSpecials(this.netSpecials, false);
         } else {
-            for (const u of this.playerUnits) u.draw(ctx, this.cameraX);
-            for (const u of this.enemyUnits) u.draw(ctx, this.cameraX);
-            for (const p of this.projectiles) p.draw(ctx, this.cameraX);
-            for (const s of this.specialAttacks) s.draw(ctx, this.cameraX);
+            r.syncUnits(this.playerUnits.concat(this.enemyUnits));
+            r.syncProjectiles(this.projectiles, false);
+            r.syncSpecials(this.specialAttacks, false);
         }
-
-        for (const p of this.particles) p.draw(ctx, this.cameraX);
-
-        ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        r.syncBasesTowers(this.playerBase, this.enemyBase, this.mode);
+        r.syncGates(this.laneUnlocked, this.mode);
+        this.bridgeParticles();
+        r.stepParticles(dt || 16);
+        if (this.interaction) this.interaction.updateHover();
+        r.render(dt || 16);
     }
 
-    drawParallaxScenery(eraConfig) {
-        const ctx = this.ctx;
-        ctx.save();
-        const pxOffset = this.cameraX * 0.25;
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-
-        if (this.playerEra === 0) {
-            ctx.beginPath();
-            ctx.moveTo(-pxOffset, GROUND_Y);
-            ctx.lineTo(200 - pxOffset, GROUND_Y - 140);
-            ctx.lineTo(400 - pxOffset, GROUND_Y - 80);
-            ctx.lineTo(650 - pxOffset, GROUND_Y - 200);
-            ctx.lineTo(850 - pxOffset, GROUND_Y - 90);
-            ctx.lineTo(1200 - pxOffset, GROUND_Y - 150);
-            ctx.lineTo(1500 - pxOffset, GROUND_Y);
-            ctx.fill();
-        } else if (this.playerEra === 1) {
-            ctx.fillStyle = 'rgba(217, 119, 6, 0.07)';
-            for (let i = 0; i < 8; i++) {
-                const cx = (i * 300) - pxOffset;
-                ctx.fillRect(cx, GROUND_Y - 180, 25, 180);
-                ctx.fillRect(cx - 5, GROUND_Y - 180, 35, 10);
+    // Translate freshly-spawned sim particles into 3D renderer effects (one-shot).
+    bridgeParticles() {
+        const r = this.r3d;
+        for (const p of this.particles) {
+            if (p._fx) continue;
+            p._fx = true;
+            if (p.type === 'text') {
+                r.floatText(p.x, p.z ?? 450, p.text, p.color, false);
+            } else if (p.type === 'blood') {
+                r.burst(p.x, p.z ?? 450, 0xdc2626, 3, false);
+            } else if (p.type === 'fire') {
+                r.burst(p.x, p.z ?? 450, 0xf97316, 2, false);
+            } else if (p.type === 'spark') {
+                r.burst(p.x, p.z ?? 450, hexToInt(p.color), 2, false);
             }
-        } else if (this.playerEra === 2) {
-            ctx.fillStyle = 'rgba(100, 116, 139, 0.07)';
-            ctx.beginPath();
-            for (let i = 0; i < 10; i++) {
-                const cx = (i * 240) - pxOffset;
-                ctx.rect(cx, GROUND_Y - 120, 160, 120);
-                ctx.rect(cx, GROUND_Y - 135, 30, 15);
-                ctx.rect(cx + 65, GROUND_Y - 135, 30, 15);
-                ctx.rect(cx + 130, GROUND_Y - 135, 30, 15);
-            }
-            ctx.fill();
-        } else if (this.playerEra === 3) {
-            ctx.fillStyle = 'rgba(39, 39, 42, 0.09)';
-            for (let i = 0; i < 7; i++) {
-                const cx = (i * 350) - pxOffset;
-                ctx.fillRect(cx, GROUND_Y - 220, 80, 220);
-                ctx.fillRect(cx + 120, GROUND_Y - 160, 50, 160);
-            }
-        } else if (this.playerEra === 4) {
-            ctx.strokeStyle = 'rgba(56, 189, 248, 0.08)';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            for (let i = 0; i < 18; i++) {
-                const lx = (i * 120) - pxOffset;
-                ctx.moveTo(lx, 100);
-                ctx.lineTo(lx, GROUND_Y);
-            }
-            ctx.stroke();
         }
-        ctx.restore();
     }
 
     // ----------------------------------------------------------------------
@@ -3154,7 +3118,7 @@ class Game {
         const dt = Math.min(100, time - this.lastTime);
         this.lastTime = time;
         this.update(dt);
-        this.draw();
+        this.draw(dt);
         requestAnimationFrame((t) => this.loop(t));
     }
 
@@ -3182,17 +3146,27 @@ class Game {
         }
         el("pause-btn").innerText = "PAUSE";
 
-        this.resize();
-        // Default zoom: show a comfortable slice of the field, framed on your base
-        this.zoom = this.clampZoom(this.viewW / 1050);
-        this.cameraX = 0;
-        this.clampCamera();
-        this.updateZoomLabel();
+        this.ensureRenderer();
 
         this.updateButtonsUI();
         this.updateHud();
         this.updateAffordance();
         this.updateSpecialUI();
+    }
+
+    async ensureRenderer() {
+        if (this.r3d) { this.r3d.resize(); return; }
+        try {
+            const test = document.createElement('canvas');
+            if (!(test.getContext('webgl2') || test.getContext('webgl'))) throw new Error('no-webgl');
+            const mod = await import('./render3d.js');
+            this.r3d = mod.createRenderer(this.canvas);
+            this.interaction = new Interaction(this);
+            this.r3d.resize();
+        } catch (e) {
+            console.error('3D renderer failed to load', e);
+            alert('This game needs WebGL. Please use a modern browser with hardware acceleration enabled.');
+        }
     }
 
     finish(result) {
@@ -3426,17 +3400,26 @@ class Game {
     // ----------------------------------------------------------------------
 
     setupEventListeners() {
-        for (let i = 1; i <= 3; i++) {
-            el(`spawn-u${i}`).addEventListener("click", () => this.playerSpawn(i - 1));
-        }
+        // Spawn buttons are driven by the Interaction controller (drag-to-lane).
         for (let i = 1; i <= 3; i++) {
             el(`evolve-u${i}`).addEventListener("click", () => this.playerEvolveUnit(i - 1));
         }
         el("buy-tower-slot").addEventListener("click", () => this.playerBuySlot());
-        el("buy-tower").addEventListener("click", () => this.playerBuildTower());
+        el("buy-tower").addEventListener("click", () => { this.interaction && this.interaction.armTowerPlacement(); });
         el("upgrade-range").addEventListener("click", () => this.playerUpgradeRange());
         el("upgrade-special").addEventListener("click", () => this.playerUpgradeSpecial());
         el("special-btn").addEventListener("click", () => this.playerSpecial());
+
+        // Lane HUD pills: unlock a locked lane, or pick the default spawn lane
+        for (const laneName of ['top', 'mid', 'bottom']) {
+            const pill = el('lane-' + laneName);
+            if (!pill) continue;
+            pill.addEventListener('click', () => {
+                if (this.gameState !== 'running') return;
+                if (!this.laneUnlocked.player[laneName]) this.playerOpenLane(laneName);
+                else { this.selectedLane = laneName; this.updateButtonsUI(); }
+            });
+        }
 
         el("pause-btn").addEventListener("click", (e) => {
             if (this.mode !== 'solo') return; // pausing is disabled online
@@ -3464,92 +3447,191 @@ class Game {
             else this.leaveMatch();
         });
 
-        // Keyboard hotkeys
+        // Keyboard hotkeys (camera is handled by OrbitControls in the 3D view)
         window.addEventListener("keydown", (e) => {
             if (this.gameState !== 'running') return;
             if (e.target && e.target.tagName === 'INPUT') return;
-            if (e.key === '1') this.playerSpawn(0);
-            else if (e.key === '2') this.playerSpawn(1);
-            else if (e.key === '3') this.playerSpawn(2);
+            if (e.key === '1') this.playerSpawn(0, this.selectedLane);
+            else if (e.key === '2') this.playerSpawn(1, this.selectedLane);
+            else if (e.key === '3') this.playerSpawn(2, this.selectedLane);
             else if (e.key === ' ') { e.preventDefault(); this.playerSpecial(); }
-            else if (e.key === '+' || e.key === '=') this.setZoom(this.zoom * 1.15);
-            else if (e.key === '-' || e.key === '_') this.setZoom(this.zoom / 1.15);
-            else if (e.key === '0') this.fitView();
         });
+    }
 
-        // Drag to pan
-        const pointerDown = (clientX) => {
-            this.isDragging = true;
-            this.dragMoved = false;
-            this.dragStartX = clientX;
-            this.dragCameraStartX = this.cameraX;
-            this.cameraVelocity = 0;
-        };
-        const pointerMove = (clientX) => {
-            if (!this.isDragging) return;
-            const dx = (clientX - this.dragStartX) / this.zoom;
-            if (Math.abs(clientX - this.dragStartX) > 3) this.dragMoved = true;
-            this.cameraX = this.dragCameraStartX - dx;
-            this.clampCamera();
-        };
-        const pointerUp = (clientX) => {
-            if (!this.isDragging) return;
-            this.isDragging = false;
-            const dx = (clientX - this.dragStartX) / this.zoom;
-            this.cameraVelocity = -dx * 0.15;
-        };
+    // ---- Unit tooltip (3D hover via raycast) ----
+    unitById(id) {
+        if (this.mode === 'guest') { const nu = this.netUnits.get(id); return nu ? nu.unit : null; }
+        for (const u of this.playerUnits) if (u.id === id) return u;
+        for (const u of this.enemyUnits) if (u.id === id) return u;
+        return null;
+    }
+    showTip(u, clientX, clientY) {
+        const tip = el("unit-tooltip");
+        if (!tip) return;
+        const maxHp = u.maxHp || u.hp;
+        const hp = Math.max(0, Math.round(u.hp));
+        const range = Math.round(u.getRange ? u.getRange(this) : u.attackRange);
+        const mine = u.team === 'player';
+        tip.innerHTML =
+            `<div class="tt-name ${mine ? 'you' : 'foe'}">${u.name} <span class="tt-side">${mine ? 'YOU' : 'ENEMY'}</span></div>` +
+            `<div class="tt-row"><span>HP</span><b>${hp} / ${maxHp}</b></div>` +
+            `<div class="tt-row"><span>Attack</span><b>${u.damage}</b></div>` +
+            `<div class="tt-row"><span>Speed</span><b>${u.speed}</b></div>` +
+            `<div class="tt-row"><span>Range</span><b>${range}</b></div>`;
+        tip.classList.remove("hidden");
+        const wrap = el("canvas-wrapper").getBoundingClientRect();
+        let left = clientX - wrap.left + 16;
+        let top = clientY - wrap.top + 16;
+        const tw = tip.offsetWidth, th = tip.offsetHeight;
+        if (left + tw > wrap.width - 4) left = clientX - wrap.left - tw - 16;
+        if (top + th > wrap.height - 4) top = wrap.height - th - 4;
+        if (left < 4) left = 4;
+        if (top < 4) top = 4;
+        tip.style.left = left + "px";
+        tip.style.top = top + "px";
+    }
+    hideTip() {
+        const tip = el("unit-tooltip");
+        if (tip) tip.classList.add("hidden");
+    }
+}
 
-        this.canvas.addEventListener("mousedown", (e) => pointerDown(e.clientX));
-        window.addEventListener("mousemove", (e) => pointerMove(e.clientX));
-        window.addEventListener("mouseup", (e) => pointerUp(e.clientX));
+// ==========================================================================
+// POINTER INTERACTION — drag-to-lane spawn, tower placement, hover tooltip.
+// OrbitControls owns camera pan/zoom/orbit on the canvas; these gestures are
+// disambiguated by where the pointer goes down (a unit button vs the ground).
+// ==========================================================================
+class Interaction {
+    constructor(game) {
+        this.game = game;
+        this.r3d = game.r3d;
+        this.canvas = game.canvas;
+        this.mode = 'idle';          // 'idle' | 'spawn' | 'tower'
+        this.dragIndex = -1;
+        this.dragMoved = false;
+        this.ghost = el('drag-ghost');
+        this.banner = el('tower-banner');
+        this._hover = null;
+        this._bind();
+    }
 
-        // Hover a unit to inspect its stats
-        this.canvas.addEventListener("mousemove", (e) => {
-            if (this.isDragging || this.gameState !== 'running') { this.hideUnitTooltip(); return; }
-            const rect = this.canvas.getBoundingClientRect();
-            const w = this.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
-            const u = this.findUnitAt(w.x, w.y);
-            if (u) this.showUnitTooltip(u, e.clientX, e.clientY);
-            else this.hideUnitTooltip();
-        });
-        this.canvas.addEventListener("mouseleave", () => this.hideUnitTooltip());
-
-        this.canvas.addEventListener("touchstart", (e) => pointerDown(e.touches[0].clientX), { passive: true });
-        this.canvas.addEventListener("touchmove", (e) => pointerMove(e.touches[0].clientX), { passive: true });
-        this.canvas.addEventListener("touchend", () => { this.isDragging = false; });
-
-        // Wheel = zoom toward cursor
-        this.canvas.addEventListener("wheel", (e) => {
-            e.preventDefault();
-            const rect = this.canvas.getBoundingClientRect();
-            const anchor = e.clientX - rect.left;
-            const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-            this.setZoom(this.zoom * factor, anchor);
-        }, { passive: false });
-
-        // Zoom control buttons
-        el("zoom-in").addEventListener("click", () => this.setZoom(this.zoom * 1.2));
-        el("zoom-out").addEventListener("click", () => this.setZoom(this.zoom / 1.2));
-        el("zoom-fit").addEventListener("click", () => this.fitView());
-
-        // Scroll arrows (hold to pan)
-        const scrollBtnLeft = el("scroll-left-btn");
-        const scrollBtnRight = el("scroll-right-btn");
-        let scrollInterval = null;
-        const startScroll = (dir) => {
-            stopScroll();
-            scrollInterval = setInterval(() => {
-                this.cameraX += dir * 22 / this.zoom;
-                this.clampCamera();
-            }, 16);
-        };
-        const stopScroll = () => { if (scrollInterval) { clearInterval(scrollInterval); scrollInterval = null; } };
-        scrollBtnLeft.addEventListener("mousedown", () => startScroll(-1));
-        scrollBtnRight.addEventListener("mousedown", () => startScroll(1));
-        for (const b of [scrollBtnLeft, scrollBtnRight]) {
-            b.addEventListener("mouseup", stopScroll);
-            b.addEventListener("mouseleave", stopScroll);
+    _bind() {
+        for (let i = 1; i <= 3; i++) {
+            el('spawn-u' + i).addEventListener('pointerdown', (e) => this._spawnDown(e, i - 1));
         }
+        window.addEventListener('pointermove', (e) => this._move(e));
+        window.addEventListener('pointerup', (e) => this._up(e));
+        this.canvas.addEventListener('pointerdown', (e) => this._canvasDown(e));
+        this.canvas.addEventListener('contextmenu', (e) => { if (this.mode === 'tower') { e.preventDefault(); this.cancel(); } });
+        window.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.cancel(); });
+        this.canvas.addEventListener('pointermove', (e) => { this._hover = { x: e.clientX, y: e.clientY }; });
+        this.canvas.addEventListener('pointerleave', () => { this._hover = null; this.game.hideTip(); });
+    }
+
+    _spawnDown(e, index) {
+        const g = this.game;
+        if (g.gameState !== 'running') return;
+        // Heavy unit unlock is a plain action (no lane drag)
+        if (index === 2 && !g.playerUnit3Unlocked) { g.playerSpawn(index); return; }
+        const tier = g.playerUnitTier[index];
+        const cost = ERA_DATA[tier].units[index].cost;
+        if (g.gold < cost) {
+            const b = el('spawn-u' + (index + 1));
+            b.classList.add('shake'); setTimeout(() => b.classList.remove('shake'), 300);
+            return;
+        }
+        e.preventDefault();
+        this.mode = 'spawn';
+        this.dragIndex = index;
+        this.dragMoved = false;
+        if (this.r3d.controls) this.r3d.controls.enabled = false;
+        if (this.ghost) { this.ghost.classList.remove('hidden'); this.ghost.innerText = 'Drop on a lane: ' + ERA_DATA[tier].units[index].name; }
+        this._moveGhost(e.clientX, e.clientY);
+    }
+
+    _move(e) {
+        if (this.mode !== 'spawn') return;
+        this.dragMoved = true;
+        this._moveGhost(e.clientX, e.clientY);
+    }
+
+    _up(e) {
+        if (this.mode !== 'spawn') return;
+        const index = this.dragIndex;
+        const lane = this._laneAt(e.clientX, e.clientY);
+        this._endSpawn();
+        const g = this.game;
+        if (lane && g.laneUnlocked.player[lane]) g.playerSpawn(index, lane);
+        else if (lane && !g.laneUnlocked.player[lane]) g.playerOpenLane(lane);
+        else if (!this.dragMoved) g.playerSpawn(index, g.selectedLane);
+    }
+
+    _endSpawn() {
+        this.mode = 'idle';
+        this.dragIndex = -1;
+        if (this.ghost) this.ghost.classList.add('hidden');
+        if (this.r3d.controls) this.r3d.controls.enabled = true;
+    }
+
+    _moveGhost(x, y) {
+        if (!this.ghost) return;
+        this.ghost.style.left = x + 'px';
+        this.ghost.style.top = y + 'px';
+    }
+
+    _laneAt(clientX, clientY) {
+        const pt = this.r3d.raycastGround(clientX, clientY);
+        if (!pt) return null;
+        const info = this.r3d.laneOfHit(pt);
+        // reject drops far from any lane centerline (~one lane width in three units)
+        if (info.dist > 9) return null;
+        return LANE_BY_IDX[info.laneIdx];
+    }
+
+    // ---- Tower placement ----
+    armTowerPlacement() {
+        const g = this.game;
+        if (g.gameState !== 'running' || g.mode === 'guest' && false) return;
+        if (g.playerBase.towers.length >= g.playerBase.unlockedSlots) return;
+        if (g.gold < TOWER_BUILD_COST) return;
+        this.mode = 'tower';
+        if (this.r3d.controls) this.r3d.controls.enabled = false;
+        if (this.banner) this.banner.classList.remove('hidden');
+        g.updateButtonsUI();
+    }
+
+    _canvasDown(e) {
+        if (this.mode !== 'tower') return;
+        if (e.button === 2) { this.cancel(); return; }
+        const pt = this.r3d.raycastGround(e.clientX, e.clientY);
+        if (!pt) return;
+        const simX = pt.x / S + 900;
+        const simZ = pt.z / S + 450;
+        const g = this.game;
+        if (g.playerBuildTower(simX, simZ)) {
+            if (g.playerBase.towers.length >= g.playerBase.unlockedSlots || g.gold < TOWER_BUILD_COST) this.cancel();
+        }
+    }
+
+    cancel() {
+        if (this.mode === 'tower') {
+            this.mode = 'idle';
+            if (this.r3d.controls) this.r3d.controls.enabled = true;
+            if (this.banner) this.banner.classList.add('hidden');
+            this.game.updateButtonsUI();
+        } else if (this.mode === 'spawn') {
+            this._endSpawn();
+        }
+    }
+
+    // Called each frame from Game.draw() — resolve the hovered unit via raycast.
+    updateHover() {
+        if (this.mode !== 'idle' || !this._hover || this.game.gameState !== 'running') { this.game.hideTip(); return; }
+        const id = this.r3d.raycastUnits(this._hover.x, this._hover.y);
+        if (id == null) { this.game.hideTip(); return; }
+        const u = this.game.unitById(id);
+        if (u) this.game.showTip(u, this._hover.x, this._hover.y);
+        else this.game.hideTip();
     }
 }
 
