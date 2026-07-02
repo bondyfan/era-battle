@@ -331,6 +331,18 @@ const SPECIAL_COOLDOWN_MS = 40000; // 40 seconds
 const TOWER_SLOT_COSTS = [150, 400, 1000];
 const TOWER_BUILD_COST = 250;
 
+// Special attack must be purchased; 4 damage tiers.
+// Index = level. Lv1 chips, Lv2 == the old baseline, Lv3 hits hard, Lv4 is brutal.
+const SPECIAL_LEVEL_MULT = [0, 0.4, 1.0, 2.0, 4.0];
+const SPECIAL_UPGRADE_COSTS = [250, 600, 1500, 4000]; // cost to go from level i -> i+1
+const MAX_SPECIAL_LEVEL = 4;
+
+// Ranged-unit range upgrade: each level lets your archers/gunners reach ~1 rank deeper.
+const RANGE_BONUS_PER_LEVEL = 45;
+const RANGE_UPGRADE_COSTS = [180, 320, 560, 950, 1600, 2700]; // cost to go from level i -> i+1
+const MAX_RANGE_LEVEL = 6;
+const RANGED_TYPES = ['ranged', 'hitscan', 'laser', 'laser_heavy'];
+
 // ==========================================================================
 // PARTICLE SYSTEM
 // ==========================================================================
@@ -1116,11 +1128,21 @@ class Unit {
         }
     }
 
+    isRanged() {
+        return RANGED_TYPES.indexOf(this.type) !== -1;
+    }
+
+    // Effective attack range including the team's purchased range upgrade (ranged units only)
+    getRange(game) {
+        return this.attackRange + (this.isRanged() ? game.rangeBonus(this.team) : 0);
+    }
+
     scanBattlefield(game) {
         const enemies = this.team === 'player' ? game.enemyUnits : game.playerUnits;
         const teammates = this.team === 'player' ? game.playerUnits : game.enemyUnits;
         const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
-        
+        const range = this.getRange(game);
+
         // 1. Check for nearest enemy unit
         let closestEnemy = null;
         let closestEnemyDist = 99999;
@@ -1143,12 +1165,12 @@ class Unit {
         const baseDist = Math.abs(enemyBase.x - this.x) - (this.width / 2 + enemyBase.width / 2);
         
         // 3. Combat Decision
-        if (closestEnemy && closestEnemyDist <= this.attackRange) {
+        if (closestEnemy && closestEnemyDist <= range) {
             this.state = 'attack';
             this.target = closestEnemy;
             return;
-        } 
-        else if (baseDist <= this.attackRange) {
+        }
+        else if (baseDist <= range) {
             this.state = 'attack';
             this.target = enemyBase;
             return;
@@ -1186,7 +1208,7 @@ class Unit {
         
         // Verify target is still within attack range (handles movement shifts)
         const dist = Math.abs(this.target.x - this.x) - (this.width / 2 + this.target.width / 2);
-        if (dist > this.attackRange + 15) {
+        if (dist > this.getRange(game) + 15) {
             this.state = 'walk';
             this.target = null;
             return;
@@ -1847,9 +1869,10 @@ class Unit {
 // ==========================================================================
 
 class SpecialAttack {
-    constructor(type, team) {
+    constructor(type, team, dmgMult = 1) {
         this.type = type; // 'meteor', 'arrows', 'fireball', 'airstrike', 'orbitallaser'
         this.team = team;
+        this.dmgMult = dmgMult; // scales all damage by the purchased special level
         this.timer = 0;
         this.duration = type === 'orbitallaser' ? 3000 : (type === 'airstrike' ? 2500 : 2000);
         this.isDead = false;
@@ -1949,12 +1972,12 @@ class SpecialAttack {
             const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
             
             if (Math.abs(enemyBase.x - this.laserX) < laserRadius) {
-                enemyBase.takeDamage(4); // heavy damage over time
+                enemyBase.takeDamage(Math.round(4 * this.dmgMult)); // heavy damage over time
             }
-            
+
             for (let unit of enemies) {
                 if (Math.abs(unit.x - this.laserX) < laserRadius) {
-                    unit.takeDamage(8, game);
+                    unit.takeDamage(Math.round(8 * this.dmgMult), game);
                 }
             }
             
@@ -1970,25 +1993,26 @@ class SpecialAttack {
         // Create falling projectile with generic coordinate targets
         const dummyTarget = { x: targetX, y: GROUND_Y, hp: 1 };
         
+        const m = this.dmgMult;
         if (this.type === 'meteor') {
             // Large boulder falling diagonally
             const startX = targetX - 100;
             const startY = -50;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 45, 'firepot', 0.8, 80));
+            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, Math.round(45 * m), 'firepot', 0.8, 80));
         }
         else if (this.type === 'arrows') {
             const startX = targetX - 80;
             const startY = -40;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 18, 'arrow', 1.3, 35));
+            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, Math.round(18 * m), 'arrow', 1.3, 35));
         }
         else if (this.type === 'fireball') {
             const startX = targetX - 120;
             const startY = -50;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 95, 'firepot', 0.6, 95));
+            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, Math.round(95 * m), 'firepot', 0.6, 95));
         }
         else if (this.type === 'airstrike') {
             // Carpet Bomb dropped vertically down from current plane
-            game.projectiles.push(new Projectile(targetX, startY, dummyTarget, this.team, 250, 'firepot', 1.5, 90));
+            game.projectiles.push(new Projectile(targetX, startY, dummyTarget, this.team, Math.round(250 * m), 'firepot', 1.5, 90));
         }
     }
 
@@ -2180,6 +2204,12 @@ class Game {
         this.specialTimer = 0;
         this.enemySpecialTimer = 0;
 
+        // Purchasable upgrades (levels). Special starts locked (must be bought).
+        this.specialLevel = 0;
+        this.enemySpecialLevel = 0;
+        this.rangeLevel = 0;
+        this.enemyRangeLevel = 0;
+
         this.timeElapsed = 0;
         this.statsSpawned = 0;
         this.statsKilled = 0;
@@ -2314,16 +2344,57 @@ class Game {
         for (const t of base.towers) t.cooldownTimer = 0;
     }
 
+    rangeBonus(team) {
+        const lvl = team === 'player' ? this.rangeLevel : this.enemyRangeLevel;
+        return lvl * RANGE_BONUS_PER_LEVEL;
+    }
+
     triggerSpecial(team) {
+        const level = team === 'player' ? this.specialLevel : this.enemySpecialLevel;
+        if (level < 1) return; // must be purchased first
         const timer = team === 'player' ? this.specialTimer : this.enemySpecialTimer;
         if (timer > 0) return;
         const cfg = ERA_DATA[team === 'player' ? this.playerEra : this.enemyEra];
-        this.specialAttacks.push(new SpecialAttack(cfg.specialType, team));
+        this.specialAttacks.push(new SpecialAttack(cfg.specialType, team, SPECIAL_LEVEL_MULT[level]));
         if (team === 'player') this.specialTimer = SPECIAL_COOLDOWN_MS;
         else this.enemySpecialTimer = SPECIAL_COOLDOWN_MS;
         const label = (team === 'enemy' ? "ENEMY " : "") + cfg.specialName.toUpperCase();
         const cx = team === 'player' ? PLAYER_BASE_X + 320 : ENEMY_BASE_X - 320;
         this.particles.push(new Particle(cx, 110, team === 'player' ? '#a855f7' : '#ef4444', 'text', label, 24));
+    }
+
+    upgradeSpecial(team) {
+        const level = team === 'player' ? this.specialLevel : this.enemySpecialLevel;
+        if (level >= MAX_SPECIAL_LEVEL) return;
+        const cost = SPECIAL_UPGRADE_COSTS[level];
+        if (team === 'player') {
+            if (this.gold < cost) return;
+            this.gold -= cost;
+            this.specialLevel++;
+            this.particles.push(new Particle(PLAYER_BASE_X + 320, 110, '#a855f7', 'text', 'SPECIAL Lv ' + this.specialLevel + '!', 22));
+            this.updateButtonsUI();
+        } else {
+            if (this.enemyGold < cost) return;
+            this.enemyGold -= cost;
+            this.enemySpecialLevel++;
+        }
+    }
+
+    upgradeRange(team) {
+        const level = team === 'player' ? this.rangeLevel : this.enemyRangeLevel;
+        if (level >= MAX_RANGE_LEVEL) return;
+        const cost = RANGE_UPGRADE_COSTS[level];
+        if (team === 'player') {
+            if (this.gold < cost) return;
+            this.gold -= cost;
+            this.rangeLevel++;
+            this.particles.push(new Particle(PLAYER_BASE_X + 30, GROUND_Y - 60, '#38bdf8', 'text', 'RANGE Lv ' + this.rangeLevel + '!', 20));
+            this.updateButtonsUI();
+        } else {
+            if (this.enemyGold < cost) return;
+            this.enemyGold -= cost;
+            this.enemyRangeLevel++;
+        }
     }
 
     buyTowerSlot(team) {
@@ -2387,6 +2458,16 @@ class Game {
         if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'tower' }); return; }
         this.buildTower('player');
     }
+    playerUpgradeSpecial() {
+        if (this.gameState !== 'running') return;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'upspecial' }); return; }
+        this.upgradeSpecial('player');
+    }
+    playerUpgradeRange() {
+        if (this.gameState !== 'running') return;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'uprange' }); return; }
+        this.upgradeRange('player');
+    }
 
     onGuestCommand(cmd) {
         if (this.mode !== 'host' || this.gameState !== 'running' || !cmd) return;
@@ -2396,6 +2477,8 @@ class Game {
             case 'special': this.triggerSpecial('enemy'); break;
             case 'slot': this.buyTowerSlot('enemy'); break;
             case 'tower': this.buildTower('enemy'); break;
+            case 'upspecial': this.upgradeSpecial('enemy'); break;
+            case 'uprange': this.upgradeRange('enemy'); break;
         }
     }
 
@@ -2435,6 +2518,32 @@ class Game {
             towerCostLabel.innerText = "MAX";
             towerBtn.querySelector(".tower-label").innerText = (this.playerBase.unlockedSlots === 0) ? "Unlock Slot First" : "Slots Full";
         }
+
+        // Range upgrade button
+        const rBtn = el("upgrade-range");
+        const rCost = el("range-cost");
+        if (this.rangeLevel >= MAX_RANGE_LEVEL) {
+            rBtn.disabled = true;
+            rBtn.querySelector(".tower-label").innerText = "Range MAX";
+            rCost.innerText = "MAX";
+        } else {
+            rBtn.disabled = false;
+            rBtn.querySelector(".tower-label").innerText = `Range → Lv ${this.rangeLevel + 1}`;
+            rCost.innerText = `${RANGE_UPGRADE_COSTS[this.rangeLevel]}g`;
+        }
+
+        // Special buy/upgrade button
+        const sBtn = el("upgrade-special");
+        const sCost = el("special-upg-cost");
+        if (this.specialLevel >= MAX_SPECIAL_LEVEL) {
+            sBtn.disabled = true;
+            sBtn.querySelector(".tower-label").innerText = "Special MAX";
+            sCost.innerText = "MAX";
+        } else {
+            sBtn.disabled = false;
+            sBtn.querySelector(".tower-label").innerText = this.specialLevel === 0 ? "Buy Special" : `Special → Lv ${this.specialLevel + 1}`;
+            sCost.innerText = `${SPECIAL_UPGRADE_COSTS[this.specialLevel]}g`;
+        }
     }
 
     updateAffordance() {
@@ -2444,17 +2553,30 @@ class Game {
             if (this.gold < eraConfig.units[i - 1].cost) btn.classList.add("disabled");
             else btn.classList.remove("disabled");
         }
+        // Upgrade buttons grey out when unaffordable (but not when already maxed)
+        const rMax = this.rangeLevel >= MAX_RANGE_LEVEL;
+        el("upgrade-range").classList.toggle("disabled", !rMax && this.gold < RANGE_UPGRADE_COSTS[this.rangeLevel]);
+        const sMax = this.specialLevel >= MAX_SPECIAL_LEVEL;
+        el("upgrade-special").classList.toggle("disabled", !sMax && this.gold < SPECIAL_UPGRADE_COSTS[this.specialLevel]);
     }
 
     updateSpecialUI() {
         const overlay = el("special-cooldown-overlay");
         const status = el("special-status-text");
+        const btn = el("special-btn");
+        if (this.specialLevel < 1) {
+            overlay.style.height = `0%`;
+            status.innerText = "Locked — Buy it";
+            btn.classList.add("disabled");
+            return;
+        }
+        btn.classList.remove("disabled");
         if (this.specialTimer > 0) {
             overlay.style.height = `${(this.specialTimer / SPECIAL_COOLDOWN_MS) * 100}%`;
-            status.innerText = `CD: ${Math.ceil(this.specialTimer / 1000)}s`;
+            status.innerText = `Lv ${this.specialLevel} · CD ${Math.ceil(this.specialTimer / 1000)}s`;
         } else {
             overlay.style.height = `0%`;
-            status.innerText = `Ready`;
+            status.innerText = `Lv ${this.specialLevel} · Ready`;
         }
     }
 
@@ -2484,6 +2606,10 @@ class Game {
             this.enemyEra = desiredEra;
             this.evolveFx('enemy');
         }
+
+        // AI gets stronger specials + longer range as the match wears on
+        this.enemySpecialLevel = Math.min(MAX_SPECIAL_LEVEL, 1 + this.enemyEra);
+        this.enemyRangeLevel = Math.min(MAX_RANGE_LEVEL, this.enemyEra);
 
         if (this.enemyBase.unlockedSlots < 3 && this.timeElapsed > (this.enemyBase.unlockedSlots * 120 + 60)) {
             this.enemyBase.unlockedSlots++;
@@ -2629,6 +2755,8 @@ class Game {
             pt: this.playerBase.towers.length, et: this.enemyBase.towers.length,
             pus: this.playerBase.unlockedSlots, eus: this.enemyBase.unlockedSlots,
             es: this.enemyStatsSpawned, ek: this.enemyStatsKilled, egn: Math.round(this.enemyStatsGold),
+            psl: this.specialLevel, esl: this.enemySpecialLevel,
+            prl: this.rangeLevel, erl: this.enemyRangeLevel,
             u, p, s,
             st: this.gameState,
             win: this.winner
@@ -2645,6 +2773,12 @@ class Game {
         this.playerEra = snap.ee;
         this.enemyEra = snap.pe;
         this.specialTimer = snap.est;
+
+        // Guest's own purchased-upgrade levels (host's enemy side)
+        this.specialLevel = snap.esl || 0;
+        this.enemySpecialLevel = snap.psl || 0;
+        this.rangeLevel = snap.erl || 0;
+        this.enemyRangeLevel = snap.prl || 0;
 
         // Guest's own end-of-match stats (tracked authoritatively by the host)
         this.statsSpawned = snap.es || 0;
@@ -3161,6 +3295,8 @@ class Game {
         }
         el("buy-tower-slot").addEventListener("click", () => this.playerBuySlot());
         el("buy-tower").addEventListener("click", () => this.playerBuildTower());
+        el("upgrade-range").addEventListener("click", () => this.playerUpgradeRange());
+        el("upgrade-special").addEventListener("click", () => this.playerUpgradeSpecial());
         el("evolve-btn").addEventListener("click", () => this.playerEvolve());
         el("special-btn").addEventListener("click", () => this.playerSpecial());
 

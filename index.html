@@ -99,6 +99,20 @@
                 </div>
             </div>
 
+            <div class="control-group">
+                <h3>UPGRADES</h3>
+                <div class="buttons-grid">
+                    <button id="upgrade-range" class="btn tower-btn" title="Extend your ranged units' attack range — reach deeper into the enemy line">
+                        <span class="tower-label">Range &rarr; Lv 1</span>
+                        <span id="range-cost" class="tower-cost">180g</span>
+                    </button>
+                    <button id="upgrade-special" class="btn tower-btn" title="Buy your special attack, then upgrade its power (4 levels: Lv1 weak → Lv4 brutal)">
+                        <span class="tower-label">Buy Special</span>
+                        <span id="special-upg-cost" class="tower-cost">250g</span>
+                    </button>
+                </div>
+            </div>
+
             <div class="control-group action-group">
                 <h3>ERA & SPECIAL</h3>
                 <div class="buttons-grid">
@@ -108,7 +122,7 @@
                     </button>
                     <button id="special-btn" class="btn special-btn" title="Shortcut: Space">
                         <span class="btn-primary-text">SPECIAL ATTACK</span>
-                        <span id="special-status-text" class="btn-sub-text">Ready</span>
+                        <span id="special-status-text" class="btn-sub-text">Locked</span>
                         <div id="special-cooldown-overlay"></div>
                     </button>
                 </div>
@@ -155,7 +169,8 @@
                     <li><strong>Earn Gold &amp; XP:</strong> Defeating enemy forces rewards currency and experience.</li>
                     <li><strong>Evolve Era:</strong> Bank enough XP to advance Stone &rarr; Ancient &rarr; Medieval &rarr; Modern &rarr; Future. Each era unlocks stronger units, towers and a new special.</li>
                     <li><strong>Defend:</strong> Unlock slots and build towers on your base to repel attackers.</li>
-                    <li><strong>Special Attacks:</strong> Fire your era's signature weapon (40s cooldown) to clear a swarm.</li>
+                    <li><strong>Special Attacks:</strong> Buy your special, then upgrade it through 4 levels (Lv1 chips away, Lv4 is brutal). Fire it on a 40s cooldown to wipe a swarm.</li>
+                    <li><strong>Range Upgrades:</strong> Pay to extend your ranged units' reach so they hit the enemy deeper in the line before it closes in.</li>
                     <li><strong>Camera:</strong> Drag to pan, scroll to zoom, hit <code>FIT</code> (or <code>0</code>) to see the whole field. Hotkeys: <code>1</code>/<code>2</code>/<code>3</code> spawn, <code>E</code> evolve, <code>Space</code> special.</li>
                     <li><strong>Online:</strong> One player creates a match and shares the 4-letter code; the other joins. You always command the blue army on the left.</li>
                 </ul>
