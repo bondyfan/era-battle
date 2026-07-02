@@ -617,6 +617,7 @@ class Base {
         this.team = team;
         this.hp = BASE_HP_MAX;
         this.x = team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X;
+        this.y = GROUND_Y; // needed so projectiles aimed at the base get a valid target height
         this.width = 110;
         this.height = 320;
         this.towers = []; // Tower instances
@@ -1095,6 +1096,8 @@ class Unit {
             if (this.team === 'enemy') {
                 game.addGold(this.goldReward);
                 game.statsKilled++;
+                // Floating "+Xg" bounty so the player sees the reward for the kill
+                game.particles.push(new Particle(this.x, this.y - this.height - 12, '#fbbf24', 'text', `+${this.goldReward}g`, 15));
             } else {
                 game.awardEnemy(this.goldReward);
             }
@@ -2088,6 +2091,12 @@ function fmtTime(secs) {
     return `${m}:${s}`;
 }
 
+// Firebase rejects NaN/Infinity — coerce any stray non-finite number to 0 for snapshots.
+function safeInt(n) {
+    n = Math.round(n);
+    return Number.isFinite(n) ? n : 0;
+}
+
 function el(id) { return document.getElementById(id); }
 
 class Game {
@@ -2158,6 +2167,65 @@ class Game {
     visibleWorldW() { return this.viewW / this.zoom; }
     maxCameraX() { return Math.max(0, VIRTUAL_WIDTH - this.visibleWorldW()); }
     clampCamera() { this.cameraX = Math.max(0, Math.min(this.maxCameraX(), this.cameraX)); }
+
+    // Vertical world offset used by the render transform (kept in sync with draw())
+    getOffY() {
+        const worldPixH = VIRTUAL_HEIGHT * this.zoom;
+        return worldPixH <= this.viewH ? (this.viewH - worldPixH) / 2 : (this.viewH - (GROUND_Y + 24) * this.zoom);
+    }
+    screenToWorld(sx, sy) {
+        return { x: this.cameraX + sx / this.zoom, y: (sy - this.getOffY()) / this.zoom };
+    }
+
+    // Units currently drawn on screen (guest renders mirrored net units)
+    renderedUnits() {
+        if (this.mode === 'guest') return [...this.netUnits.values()].map(nu => nu.unit);
+        return this.playerUnits.concat(this.enemyUnits);
+    }
+
+    findUnitAt(wx, wy) {
+        let best = null, bestDx = Infinity;
+        for (const u of this.renderedUnits()) {
+            if (u.state === 'die') continue;
+            const halfW = u.width / 2 + 5;
+            if (wx >= u.x - halfW && wx <= u.x + halfW && wy >= u.y - u.height - 10 && wy <= u.y + 6) {
+                const dx = Math.abs(wx - u.x);
+                if (dx < bestDx) { bestDx = dx; best = u; }
+            }
+        }
+        return best;
+    }
+
+    showUnitTooltip(u, clientX, clientY) {
+        const tip = el("unit-tooltip");
+        if (!tip) return;
+        const maxHp = u.maxHp || u.hp;
+        const hp = Math.max(0, Math.round(u.hp));
+        const range = Math.round(u.getRange(this));
+        const mine = u.team === 'player';
+        tip.innerHTML =
+            `<div class="tt-name ${mine ? 'you' : 'foe'}">${u.name} <span class="tt-side">${mine ? 'YOU' : 'ENEMY'}</span></div>` +
+            `<div class="tt-row"><span>HP</span><b>${hp} / ${maxHp}</b></div>` +
+            `<div class="tt-row"><span>Attack</span><b>${u.damage}</b></div>` +
+            `<div class="tt-row"><span>Speed</span><b>${u.speed}</b></div>` +
+            `<div class="tt-row"><span>Range</span><b>${range}</b></div>`;
+        tip.classList.remove("hidden");
+        const wrap = el("canvas-wrapper").getBoundingClientRect();
+        let left = clientX - wrap.left + 16;
+        let top = clientY - wrap.top + 16;
+        const tw = tip.offsetWidth, th = tip.offsetHeight;
+        if (left + tw > wrap.width - 4) left = clientX - wrap.left - tw - 16;
+        if (top + th > wrap.height - 4) top = wrap.height - th - 4;
+        if (left < 4) left = 4;
+        if (top < 4) top = 4;
+        tip.style.left = left + "px";
+        tip.style.top = top + "px";
+    }
+
+    hideUnitTooltip() {
+        const tip = el("unit-tooltip");
+        if (tip) tip.classList.add("hidden");
+    }
 
     setZoom(z, anchorScreenX) {
         const old = this.zoom;
@@ -2511,6 +2579,9 @@ class Game {
             const evoBtn = el(`evolve-u${i + 1}`);
             const evoStats = el(`evo-stats-${i + 1}`);
 
+            // Current stats of the unit you'd spawn right now
+            el(`unit-stats-${i + 1}`).innerText = `HP ${unit.hp} · ATK ${unit.damage} · SPD ${unit.speed}`;
+
             if (i === 2 && !this.playerUnit3Unlocked) {
                 // Heavy unit still locked — spawn button becomes the unlock button
                 spawnBtn.querySelector(".unit-name").innerText = unit.name;
@@ -2800,11 +2871,11 @@ class Game {
 
     broadcastSnapshot() {
         const u = [];
-        for (const un of this.playerUnits) u.push([un.id, 'p', un.era, un.typeIndex, Math.round(un.x), Math.round(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
-        for (const un of this.enemyUnits) u.push([un.id, 'e', un.era, un.typeIndex, Math.round(un.x), Math.round(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
+        for (const un of this.playerUnits) u.push([un.id, 'p', un.era, un.typeIndex, safeInt(un.x), safeInt(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
+        for (const un of this.enemyUnits) u.push([un.id, 'e', un.era, un.typeIndex, safeInt(un.x), safeInt(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
 
         const p = [];
-        for (const pr of this.projectiles) p.push([Math.round(pr.x), Math.round(pr.y), pr.type, pr.team]);
+        for (const pr of this.projectiles) p.push([safeInt(pr.x), safeInt(pr.y), pr.type, pr.team]);
 
         const s = [];
         for (const sa of this.specialAttacks) {
@@ -2895,7 +2966,11 @@ class Game {
             }
             const unit = nu.unit;
             if (hp < unit.hp && unit.state !== 'die') this.spawnHitFx(gx, unit.height);
-            if (st === 'die' && unit.state !== 'die') this.spawnDeathFx(gx, unit.height);
+            if (st === 'die' && unit.state !== 'die') {
+                this.spawnDeathFx(gx, unit.height);
+                // "+Xg" when the guest kills an opponent unit (host's 'player' = guest's 'enemy')
+                if (gTeam === 'enemy') this.spawnBountyFx(gx, unit.height, era, ti);
+            }
             unit.era = era; unit.typeIndex = ti; unit.team = gTeam;
             unit.hp = hp; unit.state = st; unit.facing = gf;
             nu.tx = gx;
@@ -2904,7 +2979,11 @@ class Game {
         for (const [, nu] of this.netUnits) {
             if (!seen.has(nu.unit.id) && !nu.remove) {
                 nu.remove = true;
-                if (nu.unit.state !== 'die') { nu.unit.state = 'die'; this.spawnDeathFx(nu.unit.x, nu.unit.height); }
+                if (nu.unit.state !== 'die') {
+                    nu.unit.state = 'die';
+                    this.spawnDeathFx(nu.unit.x, nu.unit.height);
+                    if (nu.unit.team === 'enemy') this.spawnBountyFx(nu.unit.x, nu.unit.height, nu.unit.era, nu.unit.typeIndex);
+                }
             }
         }
 
@@ -2936,6 +3015,10 @@ class Game {
         for (let i = 0; i < 4; i++) this.particles.push(new Particle(x + (Math.random() - 0.5) * 12, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood'));
         this.particles.push(new Particle(x, GROUND_Y - 20, '#cbd5e1', 'smoke'));
     }
+    spawnBountyFx(x, height, era, ti) {
+        const reward = (ERA_DATA[era] && ERA_DATA[era].units[ti] || {}).goldReward || 0;
+        this.particles.push(new Particle(x, GROUND_Y - (height || 40) - 12, '#fbbf24', 'text', `+${reward}g`, 15));
+    }
 
     // ----------------------------------------------------------------------
     // RENDERING
@@ -2955,9 +3038,7 @@ class Game {
         // When the world is taller than the view, bottom-align to the GROUND line
         // (plus a little dirt) rather than the empty world bottom — all the action
         // sits just above GROUND_Y, so this reclaims the otherwise-wasted band.
-        const worldPixH = VIRTUAL_HEIGHT * z;
-        const groundAnchor = GROUND_Y + 24;
-        const offY = worldPixH <= this.viewH ? (this.viewH - worldPixH) / 2 : (this.viewH - groundAnchor * z);
+        const offY = this.getOffY();
         ctx.setTransform(this.dpr * z, 0, 0, this.dpr * z, 0, this.dpr * offY);
 
         const vw = this.visibleWorldW();
@@ -3421,6 +3502,17 @@ class Game {
         this.canvas.addEventListener("mousedown", (e) => pointerDown(e.clientX));
         window.addEventListener("mousemove", (e) => pointerMove(e.clientX));
         window.addEventListener("mouseup", (e) => pointerUp(e.clientX));
+
+        // Hover a unit to inspect its stats
+        this.canvas.addEventListener("mousemove", (e) => {
+            if (this.isDragging || this.gameState !== 'running') { this.hideUnitTooltip(); return; }
+            const rect = this.canvas.getBoundingClientRect();
+            const w = this.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+            const u = this.findUnitAt(w.x, w.y);
+            if (u) this.showUnitTooltip(u, e.clientX, e.clientY);
+            else this.hideUnitTooltip();
+        });
+        this.canvas.addEventListener("mouseleave", () => this.hideUnitTooltip());
 
         this.canvas.addEventListener("touchstart", (e) => pointerDown(e.touches[0].clientX), { passive: true });
         this.canvas.addEventListener("touchmove", (e) => pointerMove(e.touches[0].clientX), { passive: true });

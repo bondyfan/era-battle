@@ -133,7 +133,12 @@ export const EraNet = {
     },
 
     sendSnapshot(data) {
-        if (this.gameRef) set(child(this.gameRef, "snap"), data).catch(() => {});
+        if (!this.gameRef) return;
+        // set() validates synchronously and THROWS on invalid values (NaN/undefined);
+        // guard so one bad frame can never take down the host's game loop.
+        try {
+            set(child(this.gameRef, "snap"), data).catch(() => {});
+        } catch (e) { /* skip this frame */ }
     },
 
     sendCommand(cmd) {

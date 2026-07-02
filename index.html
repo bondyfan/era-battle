@@ -47,6 +47,7 @@
             <canvas id="gameCanvas"></canvas>
 
             <div id="mp-badge" class="hidden">ONLINE</div>
+            <div id="unit-tooltip" class="hidden"></div>
 
             <div id="scroll-left-btn" class="scroll-indicator" title="Pan left (hold)">&#9664;</div>
             <div id="scroll-right-btn" class="scroll-indicator" title="Pan right (hold)">&#9654;</div>
@@ -70,6 +71,7 @@
                     <div class="unit-card">
                         <button id="spawn-u1" class="btn unit-btn" data-unit="1" title="Shortcut: 1">
                             <span class="unit-name">Clubman · T1</span>
+                            <span class="unit-stats" id="unit-stats-1">HP 50 · ATK 8 · SPD 1.1</span>
                             <span class="unit-cost">15g</span>
                         </button>
                         <button id="evolve-u1" class="btn evolve-unit-btn" title="Evolve this unit to the next era">
@@ -80,6 +82,7 @@
                     <div class="unit-card">
                         <button id="spawn-u2" class="btn unit-btn" data-unit="2" title="Shortcut: 2">
                             <span class="unit-name">Spearman · T1</span>
+                            <span class="unit-stats" id="unit-stats-2">HP 55 · ATK 7 · SPD 0.9</span>
                             <span class="unit-cost">25g</span>
                         </button>
                         <button id="evolve-u2" class="btn evolve-unit-btn" title="Evolve this unit to the next era">
@@ -90,6 +93,7 @@
                     <div class="unit-card">
                         <button id="spawn-u3" class="btn unit-btn" data-unit="3" title="Shortcut: 3">
                             <span class="unit-name">Mammoth Rider</span>
+                            <span class="unit-stats" id="unit-stats-3">HP 250 · ATK 22 · SPD 0.6</span>
                             <span class="unit-cost">🔒 Unlock 50g</span>
                         </button>
                         <button id="evolve-u3" class="btn evolve-unit-btn" title="Evolve this unit to the next era" disabled>

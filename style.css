@@ -333,6 +333,15 @@ body {
     line-height: 1.15;
 }
 
+.unit-stats {
+    font-size: 8.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin: 3px 0;
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+}
+
 .unit-btn.locked-unit {
     border-color: #a16207;
     background: linear-gradient(180deg, #2a2410 0%, #131007 100%);
@@ -844,6 +853,55 @@ body {
 }
 
 #mp-badge.hidden { display: none; }
+
+/* Unit hover tooltip */
+#unit-tooltip {
+    position: absolute;
+    z-index: 8;
+    pointer-events: none;
+    min-width: 140px;
+    background: rgba(9, 14, 26, 0.94);
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+}
+
+#unit-tooltip.hidden { display: none; }
+
+#unit-tooltip .tt-name {
+    font-size: 12px;
+    font-weight: 800;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#unit-tooltip .tt-name.you { color: #60a5fa; }
+#unit-tooltip .tt-name.foe { color: #f87171; }
+
+#unit-tooltip .tt-side {
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-muted);
+}
+
+#unit-tooltip .tt-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+
+#unit-tooltip .tt-row b { color: #f8fafc; font-weight: 700; }
 
 /* ==========================================================================
    Main menu (mode selection)
