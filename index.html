@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Era Battle - Age of War Inspired Evolution Game</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -45,12 +45,24 @@
             </div>
         </header>
 
-        <!-- Canvas and Scroll Controls -->
+        <!-- Canvas and Camera Controls -->
         <div id="canvas-wrapper">
-            <canvas id="gameCanvas" width="960" height="400"></canvas>
-            <div id="scroll-left-btn" class="scroll-indicator" title="Scroll Left (Mouse Wheel / Click)">&#9664;</div>
-            <div id="scroll-right-btn" class="scroll-indicator" title="Scroll Right (Mouse Wheel / Click)">&#9654;</div>
-            <div id="scroll-instructions">Drag Canvas to Scroll | Scroll Wheel works too!</div>
+            <canvas id="gameCanvas"></canvas>
+
+            <div id="mp-badge" class="hidden">ONLINE</div>
+
+            <div id="scroll-left-btn" class="scroll-indicator" title="Pan left (hold)">&#9664;</div>
+            <div id="scroll-right-btn" class="scroll-indicator" title="Pan right (hold)">&#9654;</div>
+
+            <!-- Zoom controls -->
+            <div id="zoom-controls">
+                <button id="zoom-out" class="zoom-btn" title="Zoom out ( - )">&minus;</button>
+                <span id="zoom-label">100%</span>
+                <button id="zoom-in" class="zoom-btn" title="Zoom in ( + )">&plus;</button>
+                <button id="zoom-fit" class="zoom-btn zoom-fit" title="Fit whole battlefield ( 0 )">FIT</button>
+            </div>
+
+            <div id="scroll-instructions">Drag to pan &nbsp;·&nbsp; Scroll wheel to zoom &nbsp;·&nbsp; FIT shows the whole field</div>
         </div>
 
         <!-- Controls panel -->
@@ -106,31 +118,81 @@
                 <h3>SYSTEM</h3>
                 <div class="buttons-grid">
                     <button id="pause-btn" class="btn system-btn">PAUSE</button>
-                    <button id="speed-btn" class="btn system-btn">SPEED: 1x</button>
+                    <button id="menu-btn" class="btn system-btn">MENU</button>
                     <button id="restart-btn" class="btn system-btn text-danger">RESTART</button>
                 </div>
             </div>
         </footer>
     </div>
 
-    <!-- Modals -->
-    <!-- Intro / Tutorial Modal -->
+    <!-- ============================ MODALS ============================ -->
+
+    <!-- Main Menu / Mode select -->
     <div id="intro-modal" class="modal-overlay">
         <div class="modal-content">
             <h1>ERA BATTLE</h1>
-            <p class="subtitle">A classic 2D base-defense evolution war game</p>
-            <div class="modal-body">
-                <h3>How to Play</h3>
+            <p class="subtitle">Evolve through the ages &amp; crush the enemy stronghold</p>
+
+            <div class="menu-buttons">
+                <button id="btn-solo" class="menu-btn-big">
+                    <span class="mb-title">SINGLE PLAYER</span>
+                    <span class="mb-sub">Battle the AI through 5 eras</span>
+                </button>
+                <button id="btn-create" class="menu-btn-big online">
+                    <span class="mb-title">CREATE ONLINE MATCH</span>
+                    <span class="mb-sub">Get a code &amp; invite a friend</span>
+                </button>
+                <button id="btn-join" class="menu-btn-big online">
+                    <span class="mb-title">JOIN ONLINE MATCH</span>
+                    <span class="mb-sub">Enter a friend's code</span>
+                </button>
+            </div>
+
+            <button id="howto-toggle" class="howto-toggle">How to Play ▾</button>
+            <div id="howto-body" class="modal-body howto-body">
                 <ul>
-                    <li><strong>Spawn Units:</strong> Use Gold to recruit units. They automatically march right to destroy the enemy base.</li>
-                    <li><strong>Earn Gold & XP:</strong> Defeating enemy forces rewards you with currency and experience.</li>
-                    <li><strong>Evolve Era:</strong> Accumulate enough XP to advance to the next age (Stone &rarr; Ancient &rarr; Medieval &rarr; Modern &rarr; Future). Evolution unlocks stronger base designs, new towers, new special attacks, and modern units!</li>
-                    <li><strong>Defend:</strong> Build defensive towers on your base to ward off invading units.</li>
-                    <li><strong>Special Attacks:</strong> Use your era's unique weapon with a cooldown to clear enemy groups when overwhelmed.</li>
-                    <li><strong>Controls:</strong> Drag the battlefield canvas to scroll or hover near edges. Use keyboard hotkeys <code>1</code>, <code>2</code>, <code>3</code> to spawn units, <code>E</code> to evolve, and <code>Space</code> for the special attack.</li>
+                    <li><strong>Spawn Units:</strong> Spend Gold to recruit units. They march right and attack automatically. Gold also trickles in over time.</li>
+                    <li><strong>Earn Gold &amp; XP:</strong> Defeating enemy forces rewards currency and experience.</li>
+                    <li><strong>Evolve Era:</strong> Bank enough XP to advance Stone &rarr; Ancient &rarr; Medieval &rarr; Modern &rarr; Future. Each era unlocks stronger units, towers and a new special.</li>
+                    <li><strong>Defend:</strong> Unlock slots and build towers on your base to repel attackers.</li>
+                    <li><strong>Special Attacks:</strong> Fire your era's signature weapon (40s cooldown) to clear a swarm.</li>
+                    <li><strong>Camera:</strong> Drag to pan, scroll to zoom, hit <code>FIT</code> (or <code>0</code>) to see the whole field. Hotkeys: <code>1</code>/<code>2</code>/<code>3</code> spawn, <code>E</code> evolve, <code>Space</code> special.</li>
+                    <li><strong>Online:</strong> One player creates a match and shares the 4-letter code; the other joins. You always command the blue army on the left.</li>
                 </ul>
             </div>
-            <button id="start-game-btn" class="btn-action">START BATTLE</button>
+        </div>
+    </div>
+
+    <!-- Join Online -->
+    <div id="join-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h1>JOIN MATCH</h1>
+            <p class="subtitle">Enter the 4-character code from your friend</p>
+            <input id="join-code-input" class="code-input" maxlength="4" autocomplete="off" spellcheck="false" placeholder="ABCD" />
+            <p id="join-error" class="form-error"></p>
+            <div class="modal-actions">
+                <button id="btn-join-back" class="btn-secondary">Back</button>
+                <button id="btn-join-confirm" class="btn-action">JOIN BATTLE</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Lobby (hosting / waiting) -->
+    <div id="lobby-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h1>ONLINE LOBBY</h1>
+            <p id="lobby-status" class="subtitle">Waiting…</p>
+            <div id="lobby-code-wrap" class="lobby-code-wrap hidden">
+                <span class="lobby-code-label">SHARE THIS CODE</span>
+                <div class="lobby-code-row">
+                    <span id="lobby-code" class="lobby-code">----</span>
+                    <button id="btn-copy-code" class="btn-secondary btn-copy">Copy</button>
+                </div>
+            </div>
+            <div class="lobby-spinner"></div>
+            <div class="modal-actions">
+                <button id="btn-lobby-cancel" class="btn-secondary">Cancel</button>
+            </div>
         </div>
     </div>
 
@@ -140,7 +202,7 @@
             <h1 id="gameover-title">VICTORY!</h1>
             <p id="gameover-subtitle" class="subtitle">You have successfully destroyed the enemy base!</p>
             <div class="modal-body stats-body">
-                <h3>Battle Reports</h3>
+                <h3>Battle Report</h3>
                 <div class="stats-grid">
                     <div class="stat-item">
                         <span class="label">Time Elapsed</span>
@@ -168,6 +230,6 @@
         </div>
     </div>
 
-    <script src="script.js"></script>
+    <script type="module" src="script.js"></script>
 </body>
 </html>

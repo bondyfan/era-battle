@@ -395,7 +395,7 @@ class Particle {
         const drawX = this.x - cameraX;
 
         if (this.type === 'text') {
-            ctx.font = `bold ${this.size}px var(--font-family)`;
+            ctx.font = `700 ${this.size}px 'Outfit', system-ui, sans-serif`;
             ctx.fillStyle = this.color;
             ctx.shadowColor = 'black';
             ctx.shadowBlur = 4;
@@ -794,7 +794,7 @@ class Base {
 // ==========================================================================
 
 class Projectile {
-    constructor(startX, startY, target, team, damage, type, speedMultiplier = 1.0) {
+    constructor(startX, startY, target, team, damage, type, speedMultiplier = 1.0, splashRadius = 0) {
         this.startX = startX;
         this.startY = startY;
         this.x = startX;
@@ -803,6 +803,7 @@ class Projectile {
         this.team = team;
         this.damage = damage;
         this.type = type; // 'pebble', 'spear', 'arrow', 'bolt', 'firepot', 'bullet', 'grenade', 'shell', 'plasma'
+        this.splashRadius = splashRadius; // >0 => area-of-effect (special attacks, missed lobs)
         this.t = 0; // Interpolation factor (0 to 1)
         
         // Speed scaling based on type
@@ -858,42 +859,47 @@ class Projectile {
         }
     }
 
+    applySplash(game) {
+        const r = this.splashRadius;
+        const enemies = this.team === 'player' ? game.enemyUnits : game.playerUnits;
+        const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
+
+        if (Math.abs(enemyBase.x - this.x) < r) {
+            enemyBase.takeDamage(Math.round(this.damage * 0.5));
+        }
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            const unit = enemies[i];
+            if (unit.state === 'die') continue;
+            const dist = Math.abs(unit.x - this.x);
+            if (dist < r) {
+                const falloff = 1 - (dist / r) * 0.4; // heavier damage near the epicenter
+                unit.takeDamage(Math.round(this.damage * falloff), game);
+            }
+        }
+    }
+
     impact(game) {
         // Hit effects & Damage
-        if (this.target && this.target.hp > 0) {
+        if (this.splashRadius > 0) {
+            // Area-of-effect: special attacks and lobbed shots whose target vanished mid-air.
+            // (This also guards against dummy "ground targets" that have no takeDamage()).
+            this.applySplash(game);
+        } else if (this.target && this.target.hp > 0 && typeof this.target.takeDamage === 'function') {
             // Apply shield mitigation (Medieval Knight takes less projectile damage)
             let actualDmg = this.damage;
-            if (this.target.type === 'shielded_melee' && 
+            if (this.target.type === 'shielded_melee' &&
                 (this.type === 'arrow' || this.type === 'bolt' || this.type === 'pebble' || this.type === 'bullet')) {
                 actualDmg = Math.round(this.damage * 0.4); // 60% mitigation!
                 // Spark indicator of shield hit
                 game.particles.push(new Particle(this.x, this.y, '#e2e8f0', 'spark', '', 5));
             }
-            
             this.target.takeDamage(actualDmg, game);
-        } else if (this.maxHeight > 0) {
-            // Splash damage check if it's a splash projectile (grenade or catapult pot)
-            if (this.type === 'firepot' || this.type === 'grenade') {
-                const splashRadius = this.type === 'firepot' ? 70 : 45;
-                const enemies = this.team === 'player' ? game.enemyUnits : game.playerUnits;
-                
-                // Damage enemy base if nearby
-                const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
-                const baseDist = Math.abs(enemyBase.x - this.x);
-                if (baseDist < splashRadius) {
-                    enemyBase.takeDamage(Math.round(this.damage * 0.5));
-                }
-                
-                // Damage units in area
-                for (let unit of enemies) {
-                    const dist = Math.abs(unit.x - this.x);
-                    if (dist < splashRadius) {
-                        unit.takeDamage(Math.round(this.damage * 0.7), game);
-                    }
-                }
-            }
+        } else if (this.maxHeight > 0 && (this.type === 'firepot' || this.type === 'grenade')) {
+            // A lobbed shot whose target died mid-air still bursts where it lands
+            this.splashRadius = this.type === 'firepot' ? 70 : 45;
+            this.applySplash(game);
         }
-        
+
         // Spawn Particles based on projectile type
         if (this.type === 'firepot') {
             for (let i = 0; i < 15; i++) {
@@ -1068,11 +1074,13 @@ class Unit {
 
         if (this.hp <= 0) {
             this.state = 'die';
-            // Reward opponent
+            // Reward the opposing commander's economy
             if (this.team === 'enemy') {
                 game.addGold(this.goldReward);
                 game.addXp(this.xpReward);
                 game.statsKilled++;
+            } else {
+                game.awardEnemy(this.goldReward, this.xpReward);
             }
         }
     }
@@ -1966,21 +1974,21 @@ class SpecialAttack {
             // Large boulder falling diagonally
             const startX = targetX - 100;
             const startY = -50;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 45, 'firepot', 0.8));
-        } 
+            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 45, 'firepot', 0.8, 80));
+        }
         else if (this.type === 'arrows') {
             const startX = targetX - 80;
             const startY = -40;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 18, 'arrow', 1.3));
-        } 
+            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 18, 'arrow', 1.3, 35));
+        }
         else if (this.type === 'fireball') {
             const startX = targetX - 120;
             const startY = -50;
-            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 95, 'firepot', 0.6));
+            game.projectiles.push(new Projectile(startX, startY, dummyTarget, this.team, 95, 'firepot', 0.6, 95));
         }
         else if (this.type === 'airstrike') {
             // Carpet Bomb dropped vertically down from current plane
-            game.projectiles.push(new Projectile(targetX, startY, dummyTarget, this.team, 250, 'firepot', 1.5));
+            game.projectiles.push(new Projectile(targetX, startY, dummyTarget, this.team, 250, 'firepot', 1.5, 90));
         }
     }
 
@@ -2033,226 +2041,379 @@ class SpecialAttack {
 // GAME CORE CONTROLLER CLASS
 // ==========================================================================
 
+// ==========================================================================
+// GAME CORE CONTROLLER CLASS
+// ==========================================================================
+
+// Networking / view tuning
+const SNAPSHOT_INTERVAL_MS = 90;   // host broadcasts ~11x / second
+const ZOOM_MAX = 1.6;              // closest zoom
+const NET_LERP = 0.3;              // guest-side position smoothing per 60fps step
+
+// Module-scoped reference so entity draw code (e.g. the Future-age Drone that
+// emits thruster sparks) can reach the live game instance safely.
+let game = null;
+
+function fmtTime(secs) {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = Math.floor(secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+}
+
+function el(id) { return document.getElementById(id); }
+
 class Game {
     constructor() {
-        this.canvas = document.getElementById("gameCanvas");
+        this.canvas = el("gameCanvas");
         this.ctx = this.canvas.getContext("2d");
-        
-        // Viewport and camera settings
+        this.dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+
+        // Camera / view state
         this.cameraX = 0;
         this.cameraVelocity = 0;
+        this.zoom = 1;
         this.isDragging = false;
+        this.dragMoved = false;
         this.dragStartX = 0;
         this.dragCameraStartX = 0;
-        
-        // Setup initial entities and values
+        this.viewW = 960;
+        this.viewH = 420;
+
+        // Multiplayer state
+        this.mode = 'solo';        // 'solo' | 'host' | 'guest'
+        this.net = null;           // EraNet module (lazy-imported)
+        this.netAccum = 0;
+        this.lastSnap = null;
+        this.netUnits = new Map(); // guest-side interpolated units, keyed by id
+        this.netProjectiles = [];
+        this.netSpecials = [];
+        this._started = false;
+        this._matchOver = false;
+        this._oppGraceTimer = null;
+
+        this.nextUnitId = 1;
+        this.winner = null;
+
         this.initGame();
-        
-        // Attach user UI events
+        this.resize();
+        window.addEventListener("resize", () => this.resize());
+
         this.setupEventListeners();
-        
-        // Start Loop
+        this.setupMenu();
+
         this.lastTime = 0;
-        this.gameState = 'menu'; // 'menu', 'running', 'paused', 'victory', 'defeat'
-        
-        // Initial button update
+        this.gameState = 'menu';
         this.updateButtonsUI();
     }
+
+    // ----------------------------------------------------------------------
+    // VIEW / CAMERA / ZOOM
+    // ----------------------------------------------------------------------
+
+    resize() {
+        this.dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+        const wrap = el("canvas-wrapper");
+        const rect = wrap.getBoundingClientRect();
+        this.viewW = Math.max(320, Math.floor(rect.width));
+        this.viewH = Math.max(220, Math.floor(rect.height));
+        this.canvas.width = Math.floor(this.viewW * this.dpr);
+        this.canvas.height = Math.floor(this.viewH * this.dpr);
+        this.canvas.style.width = this.viewW + "px";
+        this.canvas.style.height = this.viewH + "px";
+        this.zoom = this.clampZoom(this.zoom);
+        this.clampCamera();
+        this.updateZoomLabel();
+    }
+
+    zoomMin() { return Math.min(1, this.viewW / VIRTUAL_WIDTH); }
+    clampZoom(z) { return Math.max(this.zoomMin(), Math.min(ZOOM_MAX, z)); }
+    visibleWorldW() { return this.viewW / this.zoom; }
+    maxCameraX() { return Math.max(0, VIRTUAL_WIDTH - this.visibleWorldW()); }
+    clampCamera() { this.cameraX = Math.max(0, Math.min(this.maxCameraX(), this.cameraX)); }
+
+    setZoom(z, anchorScreenX) {
+        const old = this.zoom;
+        const nz = this.clampZoom(z);
+        if (anchorScreenX == null) anchorScreenX = this.viewW / 2;
+        const worldAtAnchor = this.cameraX + anchorScreenX / old;
+        this.zoom = nz;
+        this.cameraX = worldAtAnchor - anchorScreenX / nz;
+        this.clampCamera();
+        this.updateZoomLabel();
+    }
+
+    fitView() {
+        this.zoom = this.zoomMin();
+        this.cameraX = 0;
+        this.clampCamera();
+        this.updateZoomLabel();
+    }
+
+    updateZoomLabel() {
+        const l = el("zoom-label");
+        if (l) l.innerText = Math.round(this.zoom * 100) + "%";
+    }
+
+    // ----------------------------------------------------------------------
+    // STATE SETUP
+    // ----------------------------------------------------------------------
 
     initGame() {
         this.gold = 150;
         this.xp = 0;
         this.playerEra = 0;
         this.enemyEra = 0;
-        
+
+        // Enemy economy (used by online host + kept harmlessly in solo)
+        this.enemyGold = 150;
+        this.enemyXp = 0;
+
         this.playerBase = new Base('player');
         this.enemyBase = new Base('enemy');
-        
+
         this.playerUnits = [];
         this.enemyUnits = [];
         this.projectiles = [];
         this.particles = [];
         this.specialAttacks = [];
-        
-        // Cooldown timer
-        this.specialTimer = 0; // cooldown counter
-        this.gameSpeed = 1;
-        
-        // Stats for victory screen
+
+        this.specialTimer = 0;
+        this.enemySpecialTimer = 0;
+
         this.timeElapsed = 0;
         this.statsSpawned = 0;
         this.statsKilled = 0;
         this.statsGoldEarned = 150;
-        
+        // Mirror stats for the enemy/guest side (so an online guest sees real numbers)
+        this.enemyStatsSpawned = 0;
+        this.enemyStatsKilled = 0;
+        this.enemyStatsGold = 150;
+
         this.cameraX = 0;
-        
-        // AI spawn timer
-        this.enemyAiTimer = 5000; // time until next spawn
-        this.enemyAiBaseXp = 0; // simulated enemy XP
+        this.winner = null;
+        this._matchOver = false;
+
+        this.enemyAiTimer = 5000;
+
+        this.netUnits.clear();
+        this.netProjectiles = [];
+        this.netSpecials = [];
+        this.lastSnap = null;
+        this.netAccum = 0;
+        this.nextUnitId = 1;
     }
+
+    // ----------------------------------------------------------------------
+    // ECONOMY
+    // ----------------------------------------------------------------------
 
     addGold(amount) {
         this.gold += amount;
         this.statsGoldEarned += amount;
-        
-        // Animate HUD gold value indicator
-        const el = document.getElementById("gold-value");
-        el.innerText = Math.round(this.gold);
-        el.classList.remove("gold-pulse");
-        void el.offsetWidth; // trigger reflow
-        el.classList.add("gold-pulse");
+        if (this.mode !== 'guest') {
+            const gEl = el("gold-value");
+            gEl.innerText = Math.round(this.gold);
+            gEl.classList.remove("gold-pulse");
+            void gEl.offsetWidth;
+            gEl.classList.add("gold-pulse");
+        }
     }
 
     addXp(amount) {
         this.xp += amount;
-        
-        // XP progress display
+        const xEl = el("xp-value");
+        xEl.classList.remove("xp-pulse");
+        void xEl.offsetWidth;
+        xEl.classList.add("xp-pulse");
+        this.refreshXpUI();
+    }
+
+    awardEnemy(gold, xp) {
+        this.enemyGold += gold;
+        this.enemyXp += xp;
+        this.enemyStatsGold += gold;
+        this.enemyStatsKilled++;
+    }
+
+    refreshXpUI() {
         const nextXp = ERA_DATA[this.playerEra].evolveXp;
-        const el = document.getElementById("xp-value");
-        el.innerText = `${Math.round(this.xp)} / ${nextXp}`;
-        
-        el.classList.remove("xp-pulse");
-        void el.offsetWidth;
-        el.classList.add("xp-pulse");
-        
-        // Update evolve button state
-        const evolveBtn = document.getElementById("evolve-btn");
-        const evolveCostText = document.getElementById("evolve-cost-text");
-        
-        if (this.xp >= nextXp && this.playerEra < 4) {
+        el("xp-value").innerText = `${Math.round(this.xp)} / ${this.playerEra >= 4 ? 'MAX' : nextXp}`;
+        const evolveBtn = el("evolve-btn");
+        const evolveCostText = el("evolve-cost-text");
+        if (this.playerEra < 4 && this.xp >= nextXp) {
             evolveBtn.classList.remove("disabled");
             evolveBtn.classList.add("ready-to-evolve");
-            evolveCostText.innerText = "READY! Press E";
+            evolveCostText.innerText = "READY!";
         } else {
             evolveBtn.classList.add("disabled");
             evolveBtn.classList.remove("ready-to-evolve");
-            if (this.playerEra === 4) {
-                evolveCostText.innerText = "Max Era Reached";
-            } else {
-                evolveCostText.innerText = `Need ${nextXp} XP`;
-            }
+            evolveCostText.innerText = this.playerEra >= 4 ? "Max Era Reached" : `Need ${nextXp} XP`;
         }
     }
 
-    evolveEra() {
-        const currentNextXp = ERA_DATA[this.playerEra].evolveXp;
-        if (this.xp >= currentNextXp && this.playerEra < 4) {
-            this.xp -= currentNextXp;
-            this.playerEra++;
-            
-            // Spawn celebrate particles on base
-            for (let i = 0; i < 40; i++) {
-                this.particles.push(new Particle(
-                    PLAYER_BASE_X + (Math.random() - 0.5) * 50,
-                    GROUND_Y - 100 - Math.random() * 150,
-                    '#a855f7',
-                    'spark',
-                    '',
-                    4
-                ));
-            }
-            
-            // Evolve active towers to the new era towers
-            for (let tower of this.playerBase.towers) {
-                tower.cooldownTimer = 0; // reset active delay
-            }
-            
-            // Update Base HP ratio scaling
-            // (Base retains its damage, but visually upgrades)
-            
-            // Floating text
-            this.particles.push(new Particle(
-                PLAYER_BASE_X,
-                GROUND_Y - 260,
-                '#a855f7',
-                'text',
-                "EVOLVED ERA!",
-                20
-            ));
-            
-            // Sync Displays
-            document.getElementById("current-era-text").innerText = ERA_DATA[this.playerEra].name;
-            this.addXp(0); // recalculates HUD Evolve text
-            this.updateButtonsUI();
-        }
-    }
+    // ----------------------------------------------------------------------
+    // ACTIONS (unified for both teams)
+    // ----------------------------------------------------------------------
 
-    spawnPlayerUnit(index) {
-        const eraConfig = ERA_DATA[this.playerEra];
-        const unitStats = eraConfig.units[index];
-        
-        if (this.gold >= unitStats.cost) {
-            this.gold -= unitStats.cost;
-            document.getElementById("gold-value").innerText = Math.round(this.gold);
-            
-            this.playerUnits.push(new Unit(this.playerEra, index, 'player', unitStats));
+    trySpawn(team, index) {
+        const era = team === 'player' ? this.playerEra : this.enemyEra;
+        const stats = ERA_DATA[era].units[index];
+        if (!stats) return false;
+        if (team === 'player') {
+            if (this.gold < stats.cost) return false;
+            this.gold -= stats.cost;
             this.statsSpawned++;
-            
-            // Spawn puff on gate
-            this.particles.push(new Particle(PLAYER_BASE_X + 30, GROUND_Y - 20, '#cbd5e1', 'smoke'));
+        } else {
+            if (this.enemyGold < stats.cost) return false;
+            this.enemyGold -= stats.cost;
+            this.enemyStatsSpawned++;
         }
+        this.addUnitFree(team, era, index);
+        return true;
     }
 
-    triggerPlayerSpecial() {
-        if (this.specialTimer <= 0) {
-            const eraConfig = ERA_DATA[this.playerEra];
-            this.specialAttacks.push(new SpecialAttack(eraConfig.specialType, 'player'));
-            
-            // Set cooldown
-            this.specialTimer = SPECIAL_COOLDOWN_MS;
-            
-            // Trigger visual splash text
-            this.particles.push(new Particle(480, 100, '#ef4444', 'text', eraConfig.specialName.toUpperCase(), 24));
-        }
+    addUnitFree(team, era, index) {
+        const stats = ERA_DATA[era].units[index];
+        const u = new Unit(era, index, team, stats);
+        u.id = this.nextUnitId++;
+        (team === 'player' ? this.playerUnits : this.enemyUnits).push(u);
+        const gx = team === 'player' ? PLAYER_BASE_X + 30 : ENEMY_BASE_X - 30;
+        this.particles.push(new Particle(gx, GROUND_Y - 20, '#cbd5e1', 'smoke'));
+        return u;
     }
 
-    buyTowerSlot() {
-        if (this.playerBase.unlockedSlots < 3) {
-            const cost = TOWER_SLOT_COSTS[this.playerBase.unlockedSlots];
-            if (this.gold >= cost) {
-                this.gold -= cost;
-                this.playerBase.unlockedSlots++;
-                
-                // Spawn sparks
-                this.particles.push(new Particle(PLAYER_BASE_X + 35, GROUND_Y - 140, '#fbbf24', 'spark', '', 6));
-                
+    evolveTeam(team) {
+        if (team === 'player') {
+            const need = ERA_DATA[this.playerEra].evolveXp;
+            if (this.playerEra < 4 && this.xp >= need) {
+                this.xp -= need;
+                this.playerEra++;
+                this.evolveFx('player');
+                el("current-era-text").innerText = ERA_DATA[this.playerEra].name;
+                this.refreshXpUI();
                 this.updateButtonsUI();
-                document.getElementById("gold-value").innerText = Math.round(this.gold);
+            }
+        } else {
+            const need = ERA_DATA[this.enemyEra].evolveXp;
+            if (this.enemyEra < 4 && this.enemyXp >= need) {
+                this.enemyXp -= need;
+                this.enemyEra++;
+                this.evolveFx('enemy');
             }
         }
     }
 
-    buildTower() {
-        if (this.playerBase.towers.length < this.playerBase.unlockedSlots) {
-            if (this.gold >= TOWER_BUILD_COST) {
-                this.gold -= TOWER_BUILD_COST;
-                
-                const nextSlotIndex = this.playerBase.towers.length;
-                this.playerBase.towers.push(new Tower('player', nextSlotIndex));
-                
-                // Spawn sparks
-                this.particles.push(new Particle(PLAYER_BASE_X + 35, GROUND_Y - 90 - (nextSlotIndex * 60), '#fbbf24', 'spark', '', 6));
-                
-                this.updateButtonsUI();
-                document.getElementById("gold-value").innerText = Math.round(this.gold);
-            }
+    evolveFx(team) {
+        const bx = team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X;
+        const col = team === 'player' ? '#a855f7' : '#ef4444';
+        for (let i = 0; i < 40; i++) {
+            this.particles.push(new Particle(bx + (Math.random() - 0.5) * 50, GROUND_Y - 100 - Math.random() * 150, col, 'spark', '', 4));
+        }
+        this.particles.push(new Particle(bx, GROUND_Y - 260, col, 'text', team === 'player' ? "EVOLVED ERA!" : "ENEMY EVOLVED!", 20));
+        const base = team === 'player' ? this.playerBase : this.enemyBase;
+        for (const t of base.towers) t.cooldownTimer = 0;
+    }
+
+    triggerSpecial(team) {
+        const timer = team === 'player' ? this.specialTimer : this.enemySpecialTimer;
+        if (timer > 0) return;
+        const cfg = ERA_DATA[team === 'player' ? this.playerEra : this.enemyEra];
+        this.specialAttacks.push(new SpecialAttack(cfg.specialType, team));
+        if (team === 'player') this.specialTimer = SPECIAL_COOLDOWN_MS;
+        else this.enemySpecialTimer = SPECIAL_COOLDOWN_MS;
+        const label = (team === 'enemy' ? "ENEMY " : "") + cfg.specialName.toUpperCase();
+        const cx = team === 'player' ? PLAYER_BASE_X + 320 : ENEMY_BASE_X - 320;
+        this.particles.push(new Particle(cx, 110, team === 'player' ? '#a855f7' : '#ef4444', 'text', label, 24));
+    }
+
+    buyTowerSlot(team) {
+        const base = team === 'player' ? this.playerBase : this.enemyBase;
+        if (base.unlockedSlots >= 3) return;
+        const cost = TOWER_SLOT_COSTS[base.unlockedSlots];
+        if (team === 'player') {
+            if (this.gold < cost) return;
+            this.gold -= cost;
+        } else {
+            if (this.enemyGold < cost) return;
+            this.enemyGold -= cost;
+        }
+        base.unlockedSlots++;
+        this.particles.push(new Particle((team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X) + 35, GROUND_Y - 140, '#fbbf24', 'spark', '', 6));
+        if (team === 'player') this.updateButtonsUI();
+    }
+
+    buildTower(team) {
+        const base = team === 'player' ? this.playerBase : this.enemyBase;
+        if (base.towers.length >= base.unlockedSlots) return;
+        if (team === 'player') {
+            if (this.gold < TOWER_BUILD_COST) return;
+            this.gold -= TOWER_BUILD_COST;
+        } else {
+            if (this.enemyGold < TOWER_BUILD_COST) return;
+            this.enemyGold -= TOWER_BUILD_COST;
+        }
+        const idx = base.towers.length;
+        base.towers.push(new Tower(team, idx));
+        this.particles.push(new Particle((team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X) + 35, GROUND_Y - 90 - (idx * 60), '#fbbf24', 'spark', '', 6));
+        if (team === 'player') this.updateButtonsUI();
+    }
+
+    // ----------------------------------------------------------------------
+    // PLAYER INPUT ROUTING (guest forwards commands to the host)
+    // ----------------------------------------------------------------------
+
+    playerSpawn(index) {
+        if (this.gameState !== 'running') return;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'spawn', i: index }); return; }
+        this.trySpawn('player', index);
+    }
+    playerEvolve() {
+        if (this.gameState !== 'running') return;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'evolve' }); return; }
+        this.evolveTeam('player');
+    }
+    playerSpecial() {
+        if (this.gameState !== 'running') return;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'special' }); return; }
+        this.triggerSpecial('player');
+    }
+    playerBuySlot() {
+        if (this.gameState !== 'running') return;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'slot' }); return; }
+        this.buyTowerSlot('player');
+    }
+    playerBuildTower() {
+        if (this.gameState !== 'running') return;
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'tower' }); return; }
+        this.buildTower('player');
+    }
+
+    onGuestCommand(cmd) {
+        if (this.mode !== 'host' || this.gameState !== 'running' || !cmd) return;
+        switch (cmd.a) {
+            case 'spawn': this.trySpawn('enemy', cmd.i | 0); break;
+            case 'evolve': this.evolveTeam('enemy'); break;
+            case 'special': this.triggerSpecial('enemy'); break;
+            case 'slot': this.buyTowerSlot('enemy'); break;
+            case 'tower': this.buildTower('enemy'); break;
         }
     }
+
+    // ----------------------------------------------------------------------
+    // HUD / BUTTONS
+    // ----------------------------------------------------------------------
 
     updateButtonsUI() {
         const eraConfig = ERA_DATA[this.playerEra];
-        
-        // 1. Spawner Buttons
         for (let i = 1; i <= 3; i++) {
-            const btn = document.getElementById(`spawn-u${i}`);
+            const btn = el(`spawn-u${i}`);
             const unit = eraConfig.units[i - 1];
             btn.querySelector(".unit-name").innerText = unit.name;
             btn.querySelector(".unit-cost").innerText = `${unit.cost}g`;
         }
-        
-        // 2. Tower Slot button
-        const slotBtn = document.getElementById("buy-tower-slot");
-        const slotCostLabel = document.getElementById("tower-slot-cost");
+
+        const slotBtn = el("buy-tower-slot");
+        const slotCostLabel = el("tower-slot-cost");
         if (this.playerBase.unlockedSlots < 3) {
             slotBtn.disabled = false;
             slotCostLabel.innerText = `${TOWER_SLOT_COSTS[this.playerBase.unlockedSlots]}g`;
@@ -2262,10 +2423,9 @@ class Game {
             slotCostLabel.innerText = "MAX";
             slotBtn.querySelector(".tower-label").innerText = "Slots Locked";
         }
-        
-        // 3. Build Tower button
-        const towerBtn = document.getElementById("buy-tower");
-        const towerCostLabel = document.getElementById("tower-cost");
+
+        const towerBtn = el("buy-tower");
+        const towerCostLabel = el("tower-cost");
         if (this.playerBase.towers.length < this.playerBase.unlockedSlots) {
             towerBtn.disabled = false;
             towerCostLabel.innerText = `${TOWER_BUILD_COST}g`;
@@ -2277,547 +2437,841 @@ class Game {
         }
     }
 
-    // ==========================================================================
-    // ENEMY AI ENGINE
-// ==========================================================================
-    
+    updateAffordance() {
+        const eraConfig = ERA_DATA[this.playerEra];
+        for (let i = 1; i <= 3; i++) {
+            const btn = el(`spawn-u${i}`);
+            if (this.gold < eraConfig.units[i - 1].cost) btn.classList.add("disabled");
+            else btn.classList.remove("disabled");
+        }
+    }
+
+    updateSpecialUI() {
+        const overlay = el("special-cooldown-overlay");
+        const status = el("special-status-text");
+        if (this.specialTimer > 0) {
+            overlay.style.height = `${(this.specialTimer / SPECIAL_COOLDOWN_MS) * 100}%`;
+            status.innerText = `CD: ${Math.ceil(this.specialTimer / 1000)}s`;
+        } else {
+            overlay.style.height = `0%`;
+            status.innerText = `Ready`;
+        }
+    }
+
+    updateHud() {
+        el("gold-value").innerText = Math.round(this.gold);
+        const pr = Math.max(0, this.playerBase.hp / BASE_HP_MAX);
+        const er = Math.max(0, this.enemyBase.hp / BASE_HP_MAX);
+        el("player-base-hp-bar").style.width = `${pr * 100}%`;
+        el("enemy-base-hp-bar").style.width = `${er * 100}%`;
+        el("player-base-hp-text").innerText = `${Math.max(0, Math.round(this.playerBase.hp))}/${BASE_HP_MAX} HP`;
+        el("enemy-base-hp-text").innerText = `${Math.max(0, Math.round(this.enemyBase.hp))}/${BASE_HP_MAX} HP`;
+        el("current-era-text").innerText = ERA_DATA[this.playerEra].name;
+    }
+
+    // ----------------------------------------------------------------------
+    // ENEMY AI (single-player only)
+    // ----------------------------------------------------------------------
+
     updateEnemyAI(dt) {
-        // AI slowly evolves era based on elapsed match time
-        // Stone (0) -> Ancient (1): ~90s
-        // Ancient (1) -> Medieval (2): ~240s
-        // Medieval (2) -> Modern (3): ~450s
-        // Modern (3) -> Future (4): ~720s
         let desiredEra = 0;
         if (this.timeElapsed >= 720) desiredEra = 4;
         else if (this.timeElapsed >= 450) desiredEra = 3;
         else if (this.timeElapsed >= 240) desiredEra = 2;
         else if (this.timeElapsed >= 90) desiredEra = 1;
-        
+
         if (desiredEra > this.enemyEra) {
             this.enemyEra = desiredEra;
-            
-            // Spark effect on enemy base
-            for (let i = 0; i < 30; i++) {
-                this.particles.push(new Particle(
-                    ENEMY_BASE_X + (Math.random() - 0.5) * 50,
-                    GROUND_Y - 100 - Math.random() * 150,
-                    '#ef4444',
-                    'spark',
-                    '',
-                    4
-                ));
-            }
-            
-            this.particles.push(new Particle(
-                ENEMY_BASE_X,
-                GROUND_Y - 260,
-                '#ef4444',
-                'text',
-                "ENEMY EVOLVED ERA!",
-                20
-            ));
-            
-            // Upgrade enemy towers
-            for (let tower of this.enemyBase.towers) {
-                tower.cooldownTimer = 0;
-            }
+            this.evolveFx('enemy');
         }
-        
-        // Manage AI defenses (Towers slots scaling)
+
         if (this.enemyBase.unlockedSlots < 3 && this.timeElapsed > (this.enemyBase.unlockedSlots * 120 + 60)) {
             this.enemyBase.unlockedSlots++;
             this.enemyBase.towers.push(new Tower('enemy', this.enemyBase.towers.length));
         }
-        
-        // Spawn timer checks
+
         this.enemyAiTimer -= dt;
         if (this.enemyAiTimer <= 0) {
-            // Determine spawning delay
-            // Base cooldown starts at 7000ms, decreases to min 2000ms as game lasts
             const baseCooldown = Math.max(2200, 7500 - (this.timeElapsed * 6.5));
             this.enemyAiTimer = baseCooldown + Math.random() * 1800;
-            
-            // Choose unit weighting based on time/difficulty
-            // Unit 1 (Cheap): 0.50, Unit 2 (Medium): 0.35, Unit 3 (Strong): 0.15
+
             const rand = Math.random();
             let unitIndex = 0;
-            if (rand > 0.85) {
-                unitIndex = 2; // spawn Tank/Mech/Mammoth
-            } else if (rand > 0.50) {
-                unitIndex = 1; // spawn Archer/Crossbowman
-            }
-            
-            const stats = ERA_DATA[this.enemyEra].units[unitIndex];
-            this.enemyUnits.push(new Unit(this.enemyEra, unitIndex, 'enemy', stats));
-            
-            // Spawn puff on gate
-            this.particles.push(new Particle(ENEMY_BASE_X - 30, GROUND_Y - 20, '#cbd5e1', 'smoke'));
-            
-            // Occasionally, if outnumbered, Enemy triggers a Special Attack
+            if (rand > 0.85) unitIndex = 2;
+            else if (rand > 0.50) unitIndex = 1;
+
+            this.addUnitFree('enemy', this.enemyEra, unitIndex);
+
             if (this.playerUnits.length >= 4 && Math.random() < 0.25) {
-                const eraConfig = ERA_DATA[this.enemyEra];
-                this.specialAttacks.push(new SpecialAttack(eraConfig.specialType, 'enemy'));
-                this.particles.push(new Particle(480, 100, '#ef4444', 'text', "ENEMY " + eraConfig.specialName.toUpperCase(), 24));
+                this.triggerSpecial('enemy');
             }
         }
     }
 
-    // ==========================================================================
-    // RENDER & PHYSICS CYCLE
-    // ==========================================================================
+    // ----------------------------------------------------------------------
+    // MAIN UPDATE
+    // ----------------------------------------------------------------------
 
     update(dt) {
+        this.updateCamera(dt);
         if (this.gameState !== 'running') return;
-        
-        const scaledDt = dt * this.gameSpeed;
-        
-        this.timeElapsed += scaledDt / 1000;
-        
-        // Update Cooldown overlay UI
-        if (this.specialTimer > 0) {
-            this.specialTimer = Math.max(0, this.specialTimer - scaledDt);
-            const ratio = this.specialTimer / SPECIAL_COOLDOWN_MS;
-            document.getElementById("special-cooldown-overlay").style.height = `${ratio * 100}%`;
-            
-            const cdSecs = Math.ceil(this.specialTimer / 1000);
-            document.getElementById("special-status-text").innerText = `CD: ${cdSecs}s`;
-        } else {
-            document.getElementById("special-cooldown-overlay").style.height = `0%`;
-            document.getElementById("special-status-text").innerText = `Ready`;
-        }
-        
-        // Camera edge-scrolling or drag physics damping
-        if (!this.isDragging) {
-            this.cameraX += this.cameraVelocity * (dt / 16.666);
-            this.cameraVelocity *= Math.pow(0.85, dt / 16.666); // Friction
-            if (Math.abs(this.cameraVelocity) < 0.05) this.cameraVelocity = 0;
-        }
-        this.cameraX = Math.max(0, Math.min(VIRTUAL_WIDTH - this.canvas.width, this.cameraX));
-        
-        // Bases
-        this.playerBase.update(scaledDt, this);
-        this.enemyBase.update(scaledDt, this);
-        
-        // Units loop
-        // (Copy lists to prevent index skips during mutations)
-        const pUnits = [...this.playerUnits];
-        const eUnits = [...this.enemyUnits];
-        
-        for (let unit of pUnits) unit.update(scaledDt, this);
-        for (let unit of eUnits) unit.update(scaledDt, this);
-        
-        // Projectiles loop
+
+        if (this.mode === 'guest') { this.updateGuest(dt); return; }
+
+        const t = dt; // fixed 1x speed
+        this.timeElapsed += t / 1000;
+
+        // Gentle passive income keeps the economy flowing (era-scaled)
+        this.gold += (1 + this.playerEra) * (t / 1000);
+        if (this.mode === 'host') this.enemyGold += (1 + this.enemyEra) * (t / 1000);
+
+        this.specialTimer = Math.max(0, this.specialTimer - t);
+        this.enemySpecialTimer = Math.max(0, this.enemySpecialTimer - t);
+        this.updateSpecialUI();
+
+        this.playerBase.update(t, this);
+        this.enemyBase.update(t, this);
+
+        for (const u of [...this.playerUnits]) u.update(t, this);
+        for (const u of [...this.enemyUnits]) u.update(t, this);
+
         for (let i = this.projectiles.length - 1; i >= 0; i--) {
-            const proj = this.projectiles[i];
-            proj.update(scaledDt, this);
-            if (proj.isDead) this.projectiles.splice(i, 1);
+            const p = this.projectiles[i];
+            p.update(t, this);
+            if (p.isDead) this.projectiles.splice(i, 1);
         }
-        
-        // Particles loop
         for (let i = this.particles.length - 1; i >= 0; i--) {
             const p = this.particles[i];
-            p.update(scaledDt);
+            p.update(t);
             if (p.alpha <= 0) this.particles.splice(i, 1);
         }
-        
-        // Special attacks
         for (let i = this.specialAttacks.length - 1; i >= 0; i--) {
-            const sa = this.specialAttacks[i];
-            sa.update(scaledDt, this);
-            if (sa.isDead) this.specialAttacks.splice(i, 1);
+            const s = this.specialAttacks[i];
+            s.update(t, this);
+            if (s.isDead) this.specialAttacks.splice(i, 1);
         }
-        
-        // Update Enemy AI
-        this.updateEnemyAI(scaledDt);
-        
-        // Sync Base Health Displays
-        const playerHpRatio = Math.max(0, this.playerBase.hp / BASE_HP_MAX);
-        const enemyHpRatio = Math.max(0, this.enemyBase.hp / BASE_HP_MAX);
-        
-        document.getElementById("player-base-hp-bar").style.width = `${playerHpRatio * 100}%`;
-        document.getElementById("enemy-base-hp-bar").style.width = `${enemyHpRatio * 100}%`;
-        document.getElementById("player-base-hp-text").innerText = `${this.playerBase.hp}/${BASE_HP_MAX} HP`;
-        document.getElementById("enemy-base-hp-text").innerText = `${this.enemyBase.hp}/${BASE_HP_MAX} HP`;
-        
-        // Update unit spawn button disables based on current gold
-        const eraConfig = ERA_DATA[this.playerEra];
-        for (let i = 1; i <= 3; i++) {
-            const btn = document.getElementById(`spawn-u${i}`);
-            if (this.gold < eraConfig.units[i - 1].cost) {
-                btn.classList.add("disabled");
-            } else {
-                btn.classList.remove("disabled");
+
+        if (this.mode === 'solo') this.updateEnemyAI(t);
+
+        this.updateHud();
+        this.updateAffordance();
+
+        if (this.playerBase.hp <= 0) this.finish('player_lost');
+        else if (this.enemyBase.hp <= 0) this.finish('player_won');
+
+        if (this.mode === 'host') {
+            this.netAccum += dt;
+            if (this.netAccum >= SNAPSHOT_INTERVAL_MS) {
+                this.netAccum = 0;
+                this.broadcastSnapshot();
             }
-        }
-        
-        // Check gameover conditions
-        if (this.playerBase.hp <= 0) {
-            this.endGame(false);
-        } else if (this.enemyBase.hp <= 0) {
-            this.endGame(true);
         }
     }
 
+    updateCamera(dt) {
+        if (!this.isDragging) {
+            this.cameraX += this.cameraVelocity * (dt / 16.666);
+            this.cameraVelocity *= Math.pow(0.85, dt / 16.666);
+            if (Math.abs(this.cameraVelocity) < 0.05) this.cameraVelocity = 0;
+        }
+        this.clampCamera();
+    }
+
+    updateGuest(dt) {
+        const k = 1 - Math.pow(1 - NET_LERP, dt / 16.666);
+        for (const [, nu] of this.netUnits) {
+            nu.unit.x += (nu.tx - nu.unit.x) * k;
+            if (nu.unit.state === 'walk' && !nu.unit.isBlocked) {
+                nu.unit.animTimer += nu.unit.speed * 0.15 * (dt / 16.666);
+            }
+            if (nu.unit.state === 'die') {
+                nu.unit.deathProgress = Math.min(1, nu.unit.deathProgress + 0.05 * (dt / 16.666));
+            }
+        }
+        for (const [id, nu] of [...this.netUnits]) {
+            if (nu.remove && nu.unit.deathProgress >= 1) this.netUnits.delete(id);
+        }
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+            p.update(dt);
+            if (p.alpha <= 0) this.particles.splice(i, 1);
+        }
+        this.updateSpecialUI();
+        this.updateAffordance();
+        this.timeElapsed += dt / 1000;
+    }
+
+    // ----------------------------------------------------------------------
+    // NETWORK SNAPSHOTS
+    // ----------------------------------------------------------------------
+
+    broadcastSnapshot() {
+        const u = [];
+        for (const un of this.playerUnits) u.push([un.id, 'p', un.era, un.typeIndex, Math.round(un.x), Math.round(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
+        for (const un of this.enemyUnits) u.push([un.id, 'e', un.era, un.typeIndex, Math.round(un.x), Math.round(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
+
+        const p = [];
+        for (const pr of this.projectiles) p.push([Math.round(pr.x), Math.round(pr.y), pr.type, pr.team]);
+
+        const s = [];
+        for (const sa of this.specialAttacks) {
+            if (sa.type === 'airstrike') s.push(['airstrike', sa.team, Math.round(sa.airstrikePlaneX)]);
+            else if (sa.type === 'orbitallaser') s.push(['orbitallaser', sa.team, Math.round(sa.laserX)]);
+        }
+
+        this.net && this.net.sendSnapshot({
+            tm: Date.now(),
+            ph: Math.round(this.playerBase.hp), eh: Math.round(this.enemyBase.hp),
+            pe: this.playerEra, ee: this.enemyEra,
+            pg: Math.round(this.gold), pxp: Math.round(this.xp),
+            eg: Math.round(this.enemyGold), exp: Math.round(this.enemyXp),
+            pst: Math.round(this.specialTimer), est: Math.round(this.enemySpecialTimer),
+            pt: this.playerBase.towers.length, et: this.enemyBase.towers.length,
+            pus: this.playerBase.unlockedSlots, eus: this.enemyBase.unlockedSlots,
+            es: this.enemyStatsSpawned, ek: this.enemyStatsKilled, egn: Math.round(this.enemyStatsGold),
+            u, p, s,
+            st: this.gameState,
+            win: this.winner
+        });
+    }
+
+    applySnapshot(snap) {
+        if (this.mode !== 'guest') return;
+        this.lastSnap = snap;
+
+        // Guest is the host's opponent, so the guest's own economy = enemy* fields.
+        this.gold = snap.eg;
+        this.xp = snap.exp;
+        this.playerEra = snap.ee;
+        this.enemyEra = snap.pe;
+        this.specialTimer = snap.est;
+
+        // Guest's own end-of-match stats (tracked authoritatively by the host)
+        this.statsSpawned = snap.es || 0;
+        this.statsKilled = snap.ek || 0;
+        this.statsGoldEarned = snap.egn || 150;
+
+        this.playerBase.hp = snap.eh;
+        this.enemyBase.hp = snap.ph;
+        this.playerBase.unlockedSlots = snap.eus;
+        this.enemyBase.unlockedSlots = snap.pus;
+        this.setTowerCount(this.playerBase, 'player', snap.et);
+        this.setTowerCount(this.enemyBase, 'enemy', snap.pt);
+
+        // HUD (mirrored: "Your Base" = the host's enemy base)
+        el("gold-value").innerText = Math.round(this.gold);
+        el("player-base-hp-bar").style.width = `${Math.max(0, snap.eh / BASE_HP_MAX) * 100}%`;
+        el("enemy-base-hp-bar").style.width = `${Math.max(0, snap.ph / BASE_HP_MAX) * 100}%`;
+        el("player-base-hp-text").innerText = `${Math.max(0, Math.round(snap.eh))}/${BASE_HP_MAX} HP`;
+        el("enemy-base-hp-text").innerText = `${Math.max(0, Math.round(snap.ph))}/${BASE_HP_MAX} HP`;
+        el("current-era-text").innerText = ERA_DATA[this.playerEra].name;
+        this.refreshXpUIGuest(snap);
+        this.updateButtonsUI();
+
+        // Units — mirror host-space into guest-space
+        const seen = new Set();
+        for (const arr of snap.u) {
+            const [id, team, era, ti, x, hp, st, f] = arr;
+            seen.add(id);
+            const gTeam = team === 'e' ? 'player' : 'enemy'; // guest's own units are host's 'enemy'
+            const gx = VIRTUAL_WIDTH - x;
+            const gf = -f;
+            let nu = this.netUnits.get(id);
+            if (!nu) {
+                const stats = ERA_DATA[era].units[ti];
+                const unit = new Unit(era, ti, gTeam, stats);
+                unit.id = id;
+                unit.x = gx;
+                unit.facing = gf;
+                nu = { unit, tx: gx };
+                this.netUnits.set(id, nu);
+            }
+            const unit = nu.unit;
+            if (hp < unit.hp && unit.state !== 'die') this.spawnHitFx(gx, unit.height);
+            if (st === 'die' && unit.state !== 'die') this.spawnDeathFx(gx, unit.height);
+            unit.era = era; unit.typeIndex = ti; unit.team = gTeam;
+            unit.hp = hp; unit.state = st; unit.facing = gf;
+            nu.tx = gx;
+            if (st === 'die') nu.remove = true;
+        }
+        for (const [, nu] of this.netUnits) {
+            if (!seen.has(nu.unit.id) && !nu.remove) {
+                nu.remove = true;
+                if (nu.unit.state !== 'die') { nu.unit.state = 'die'; this.spawnDeathFx(nu.unit.x, nu.unit.height); }
+            }
+        }
+
+        // Projectiles / specials — mirror and relabel team
+        this.netProjectiles = snap.p.map(([x, y, type, team]) => ({
+            x: VIRTUAL_WIDTH - x, y, type, team: team === 'player' ? 'enemy' : 'player'
+        }));
+        this.netSpecials = snap.s.map(([type, team, x]) => ({
+            type, team: team === 'player' ? 'enemy' : 'player', x: VIRTUAL_WIDTH - x
+        }));
+
+        // End of match (host-authoritative result)
+        if ((snap.st === 'victory' || snap.st === 'defeat') && !this._matchOver) {
+            this._matchOver = true;
+            this.gameState = snap.st === 'victory' ? 'defeat' : 'victory';
+            this.showGameOver(this.gameState === 'victory', true);
+        }
+    }
+
+    refreshXpUIGuest(snap) {
+        const era = this.playerEra;
+        const nextXp = ERA_DATA[era].evolveXp;
+        el("xp-value").innerText = `${Math.round(snap.exp)} / ${era >= 4 ? 'MAX' : nextXp}`;
+        const evolveBtn = el("evolve-btn");
+        const t = el("evolve-cost-text");
+        if (era < 4 && snap.exp >= nextXp) {
+            evolveBtn.classList.remove("disabled");
+            evolveBtn.classList.add("ready-to-evolve");
+            t.innerText = "READY!";
+        } else {
+            evolveBtn.classList.add("disabled");
+            evolveBtn.classList.remove("ready-to-evolve");
+            t.innerText = era >= 4 ? "Max Era Reached" : `Need ${nextXp} XP`;
+        }
+    }
+
+    setTowerCount(base, team, count) {
+        while (base.towers.length < count) base.towers.push(new Tower(team, base.towers.length));
+        while (base.towers.length > count) base.towers.pop();
+    }
+
+    spawnHitFx(x, height) {
+        this.particles.push(new Particle(x + (Math.random() - 0.5) * 10, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood'));
+    }
+    spawnDeathFx(x, height) {
+        for (let i = 0; i < 4; i++) this.particles.push(new Particle(x + (Math.random() - 0.5) * 12, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood'));
+        this.particles.push(new Particle(x, GROUND_Y - 20, '#cbd5e1', 'smoke'));
+    }
+
+    // ----------------------------------------------------------------------
+    // RENDERING
+    // ----------------------------------------------------------------------
+
     draw() {
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        
-        const eraConfig = ERA_DATA[this.playerEra];
-        
-        // 1. Draw Sky Parallax Background
-        const grad = this.ctx.createLinearGradient(0, 0, 0, GROUND_Y);
-        grad.addColorStop(0, eraConfig.skyGradient[0]);
-        grad.addColorStop(1, eraConfig.skyGradient[1]);
-        this.ctx.fillStyle = grad;
-        this.ctx.fillRect(0, 0, this.canvas.width, GROUND_Y);
-        
-        // 2. Parallax background scenery (draw columns, mountains, structures)
-        this.drawParallaxScenery(eraConfig);
-        
-        // 3. Draw Ground
-        this.ctx.fillStyle = eraConfig.groundColor;
-        this.ctx.fillRect(0, GROUND_Y, this.canvas.width, this.canvas.height - GROUND_Y);
-        
-        // Draw decorative ground line border
-        this.ctx.strokeStyle = '#1e293b';
-        this.ctx.lineWidth = 3;
-        this.ctx.beginPath();
-        this.ctx.moveTo(0, GROUND_Y);
-        this.ctx.lineTo(this.canvas.width, GROUND_Y);
-        this.ctx.stroke();
-        
-        // 4. Draw game entities with respect to camera offset
-        this.playerBase.draw(this.ctx, this.cameraX, this);
-        this.enemyBase.draw(this.ctx, this.cameraX, this);
-        
-        // Draw Units
-        for (let unit of this.playerUnits) unit.draw(this.ctx, this.cameraX);
-        for (let unit of this.enemyUnits) unit.draw(this.ctx, this.cameraX);
-        
-        // Draw Projectiles
-        for (let proj of this.projectiles) proj.draw(this.ctx, this.cameraX);
-        
-        // Draw Specials
-        for (let sa of this.specialAttacks) sa.draw(this.ctx, this.cameraX);
-        
-        // Draw Particles
-        for (let p of this.particles) p.draw(this.ctx, this.cameraX);
-        
-        // 5. Draw mouse drag navigation guidelines if needed
-        // (Just keeping drawing simple and optimized)
+        const ctx = this.ctx;
+        const z = this.zoom;
+        const cfg = ERA_DATA[this.playerEra];
+
+        // Letterbox fill (device pixels)
+        ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        ctx.fillStyle = cfg.skyGradient[0];
+        ctx.fillRect(0, 0, this.viewW, this.viewH);
+
+        // World transform: screen = ((x - cameraX) * z, y * z + offY) * dpr.
+        // When the world is taller than the view, bottom-align to the GROUND line
+        // (plus a little dirt) rather than the empty world bottom — all the action
+        // sits just above GROUND_Y, so this reclaims the otherwise-wasted band.
+        const worldPixH = VIRTUAL_HEIGHT * z;
+        const groundAnchor = GROUND_Y + 24;
+        const offY = worldPixH <= this.viewH ? (this.viewH - worldPixH) / 2 : (this.viewH - groundAnchor * z);
+        ctx.setTransform(this.dpr * z, 0, 0, this.dpr * z, 0, this.dpr * offY);
+
+        const vw = this.visibleWorldW();
+
+        // Sky gradient
+        const grad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+        grad.addColorStop(0, cfg.skyGradient[0]);
+        grad.addColorStop(1, cfg.skyGradient[1]);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, vw, GROUND_Y);
+
+        this.drawParallaxScenery(cfg);
+
+        // Ground
+        ctx.fillStyle = cfg.groundColor;
+        ctx.fillRect(0, GROUND_Y, vw, VIRTUAL_HEIGHT - GROUND_Y);
+        ctx.strokeStyle = '#1e293b';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, GROUND_Y);
+        ctx.lineTo(vw, GROUND_Y);
+        ctx.stroke();
+
+        // Entities
+        this.playerBase.draw(ctx, this.cameraX, this);
+        this.enemyBase.draw(ctx, this.cameraX, this);
+
+        if (this.mode === 'guest') {
+            for (const [, nu] of this.netUnits) nu.unit.draw(ctx, this.cameraX);
+            for (const pr of this.netProjectiles) {
+                const o = Object.create(Projectile.prototype);
+                o.x = pr.x; o.y = pr.y; o.type = pr.type; o.team = pr.team;
+                o.draw(ctx, this.cameraX);
+            }
+            for (const sp of this.netSpecials) {
+                const o = Object.create(SpecialAttack.prototype);
+                o.type = sp.type; o.team = sp.team; o.airstrikePlaneX = sp.x; o.laserX = sp.x;
+                o.draw(ctx, this.cameraX);
+            }
+        } else {
+            for (const u of this.playerUnits) u.draw(ctx, this.cameraX);
+            for (const u of this.enemyUnits) u.draw(ctx, this.cameraX);
+            for (const p of this.projectiles) p.draw(ctx, this.cameraX);
+            for (const s of this.specialAttacks) s.draw(ctx, this.cameraX);
+        }
+
+        for (const p of this.particles) p.draw(ctx, this.cameraX);
+
+        ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     }
 
     drawParallaxScenery(eraConfig) {
-        this.ctx.save();
-        
-        // Scale elements by camera parallax factor
-        const pxOffset = this.cameraX * 0.25; // 4x slower movement
-        
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-        
-        if (this.playerEra === 0) { // Stone age: Mountains and rocky ceiling curves
-            this.ctx.beginPath();
-            this.ctx.moveTo(-pxOffset, GROUND_Y);
-            this.ctx.lineTo(200 - pxOffset, GROUND_Y - 140);
-            this.ctx.lineTo(400 - pxOffset, GROUND_Y - 80);
-            this.ctx.lineTo(650 - pxOffset, GROUND_Y - 200);
-            this.ctx.lineTo(850 - pxOffset, GROUND_Y - 90);
-            this.ctx.lineTo(1200 - pxOffset, GROUND_Y - 150);
-            this.ctx.lineTo(1500 - pxOffset, GROUND_Y);
-            this.ctx.fill();
-        } 
-        else if (this.playerEra === 1) { // Greek Pillars/Temples
-            this.ctx.fillStyle = 'rgba(217, 119, 6, 0.07)';
-            // Columns
-            for (let i = 0; i < 6; i++) {
-                const cx = (i * 300) - pxOffset;
-                this.ctx.fillRect(cx, GROUND_Y - 180, 25, 180);
-                this.ctx.fillRect(cx - 5, GROUND_Y - 180, 35, 10);
-            }
-        } 
-        else if (this.playerEra === 2) { // Medieval castle walls
-            this.ctx.fillStyle = 'rgba(100, 116, 139, 0.07)';
-            this.ctx.beginPath();
+        const ctx = this.ctx;
+        ctx.save();
+        const pxOffset = this.cameraX * 0.25;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+
+        if (this.playerEra === 0) {
+            ctx.beginPath();
+            ctx.moveTo(-pxOffset, GROUND_Y);
+            ctx.lineTo(200 - pxOffset, GROUND_Y - 140);
+            ctx.lineTo(400 - pxOffset, GROUND_Y - 80);
+            ctx.lineTo(650 - pxOffset, GROUND_Y - 200);
+            ctx.lineTo(850 - pxOffset, GROUND_Y - 90);
+            ctx.lineTo(1200 - pxOffset, GROUND_Y - 150);
+            ctx.lineTo(1500 - pxOffset, GROUND_Y);
+            ctx.fill();
+        } else if (this.playerEra === 1) {
+            ctx.fillStyle = 'rgba(217, 119, 6, 0.07)';
             for (let i = 0; i < 8; i++) {
+                const cx = (i * 300) - pxOffset;
+                ctx.fillRect(cx, GROUND_Y - 180, 25, 180);
+                ctx.fillRect(cx - 5, GROUND_Y - 180, 35, 10);
+            }
+        } else if (this.playerEra === 2) {
+            ctx.fillStyle = 'rgba(100, 116, 139, 0.07)';
+            ctx.beginPath();
+            for (let i = 0; i < 10; i++) {
                 const cx = (i * 240) - pxOffset;
-                this.ctx.rect(cx, GROUND_Y - 120, 160, 120);
-                // crenellation tops
-                this.ctx.rect(cx, GROUND_Y - 135, 30, 15);
-                this.ctx.rect(cx + 65, GROUND_Y - 135, 30, 15);
-                this.ctx.rect(cx + 130, GROUND_Y - 135, 30, 15);
+                ctx.rect(cx, GROUND_Y - 120, 160, 120);
+                ctx.rect(cx, GROUND_Y - 135, 30, 15);
+                ctx.rect(cx + 65, GROUND_Y - 135, 30, 15);
+                ctx.rect(cx + 130, GROUND_Y - 135, 30, 15);
             }
-            this.ctx.fill();
-        } 
-        else if (this.playerEra === 3) { // Modern smoke stacks & city silhouettes
-            this.ctx.fillStyle = 'rgba(39, 39, 42, 0.09)';
-            for (let i = 0; i < 5; i++) {
+            ctx.fill();
+        } else if (this.playerEra === 3) {
+            ctx.fillStyle = 'rgba(39, 39, 42, 0.09)';
+            for (let i = 0; i < 7; i++) {
                 const cx = (i * 350) - pxOffset;
-                this.ctx.fillRect(cx, GROUND_Y - 220, 80, 220); // building silhouette
-                this.ctx.fillRect(cx + 120, GROUND_Y - 160, 50, 160);
+                ctx.fillRect(cx, GROUND_Y - 220, 80, 220);
+                ctx.fillRect(cx + 120, GROUND_Y - 160, 50, 160);
             }
-        } 
-        else if (this.playerEra === 4) { // Future Hologram grids and spires
-            this.ctx.strokeStyle = 'rgba(56, 189, 248, 0.08)';
-            this.ctx.lineWidth = 1.5;
-            this.ctx.beginPath();
-            // grid lines
-            for (let i = 0; i < 15; i++) {
+        } else if (this.playerEra === 4) {
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.08)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (let i = 0; i < 18; i++) {
                 const lx = (i * 120) - pxOffset;
-                this.ctx.moveTo(lx, 100);
-                this.ctx.lineTo(lx, GROUND_Y);
+                ctx.moveTo(lx, 100);
+                ctx.lineTo(lx, GROUND_Y);
             }
-            this.ctx.stroke();
+            ctx.stroke();
         }
-        
-        this.ctx.restore();
+        ctx.restore();
     }
 
-    // ==========================================================================
-    // GAME LOOPS & TIMING
-    // ==========================================================================
+    // ----------------------------------------------------------------------
+    // GAME LOOP + LIFECYCLE
+    // ----------------------------------------------------------------------
 
     loop(time) {
         if (!this.lastTime) this.lastTime = time;
-        const dt = Math.min(100, time - this.lastTime); // Caps max timestep lag
-        
+        const dt = Math.min(100, time - this.lastTime);
         this.lastTime = time;
-        
-        // Process mechanics & redraw
         this.update(dt);
         this.draw();
-        
-        // Loop continuation
         requestAnimationFrame((t) => this.loop(t));
     }
 
-    startGame() {
+    startMatch(mode) {
+        this.mode = mode;
         this.initGame();
         this.gameState = 'running';
-        document.getElementById("intro-modal").classList.add("hidden");
-        document.getElementById("gameover-modal").classList.add("hidden");
-        
-        // Reset speed to normal
-        this.gameSpeed = 1;
-        document.getElementById("speed-btn").innerText = "SPEED: 1x";
-        
-        // Sound or audio triggers here if necessary
+        this._matchOver = false;
+
+        // Hide all overlays
+        for (const id of ["intro-modal", "join-modal", "lobby-modal", "gameover-modal"]) {
+            const m = el(id);
+            if (m) m.classList.add("hidden");
+        }
+
+        // Reflect mode in the UI
+        document.body.classList.toggle('is-multiplayer', mode !== 'solo');
+        const badge = el("mp-badge");
+        if (badge) {
+            if (mode === 'solo') badge.classList.add('hidden');
+            else {
+                badge.classList.remove('hidden');
+                badge.innerText = "● ONLINE" + (this.net && this.net.code ? " · " + this.net.code : "");
+            }
+        }
+        el("pause-btn").innerText = "PAUSE";
+
+        this.resize();
+        // Default zoom: show a comfortable slice of the field, framed on your base
+        this.zoom = this.clampZoom(this.viewW / 1050);
+        this.cameraX = 0;
+        this.clampCamera();
+        this.updateZoomLabel();
+
+        this.updateButtonsUI();
+        this.updateHud();
+        this.updateAffordance();
+        this.refreshXpUI();
+        this.updateSpecialUI();
     }
 
-    endGame(isVictory) {
-        this.gameState = isVictory ? 'victory' : 'defeat';
-        
-        // Sync Game Over overlay styles
-        const modal = document.getElementById("gameover-modal");
-        const title = document.getElementById("gameover-title");
-        const subtitle = document.getElementById("gameover-subtitle");
-        
-        modal.classList.remove("hidden");
-        modal.classList.remove("victory-style");
-        modal.classList.remove("defeat-style");
-        
+    finish(result) {
+        if (this._matchOver) return;
+        this._matchOver = true;
+        const won = result === 'player_won';
+        this.gameState = won ? 'victory' : 'defeat';
+        this.winner = won ? 'player' : 'enemy';
+        if (this.mode === 'host') {
+            this.broadcastSnapshot();
+            this.net && this.net.setMeta({ state: 'ended', winner: this.winner });
+        }
+        this.showGameOver(won, this.mode !== 'solo');
+    }
+
+    showGameOver(isVictory, isOnline) {
+        // Don't leave a frozen networked battlefield rendering behind the modal.
+        this.netUnits.clear();
+        this.netProjectiles = [];
+        this.netSpecials = [];
+
+        const modal = el("gameover-modal");
+        const title = el("gameover-title");
+        const subtitle = el("gameover-subtitle");
+
+        modal.classList.remove("hidden", "victory-style", "defeat-style");
         if (isVictory) {
             modal.classList.add("victory-style");
             title.innerText = "VICTORY!";
-            subtitle.innerText = "You successfully defended the era and smashed the enemy stronghold!";
+            subtitle.innerText = isOnline
+                ? "You crushed your opponent's stronghold. GG!"
+                : "You successfully defended the era and smashed the enemy stronghold!";
         } else {
             modal.classList.add("defeat-style");
             title.innerText = "DEFEAT!";
-            subtitle.innerText = "Your base was overrun and crumbled to dust.";
+            subtitle.innerText = isOnline
+                ? "Your base was overrun by your opponent."
+                : "Your base was overrun and crumbled to dust.";
         }
-        
-        // Populate stats grid
-        const formatTime = (secs) => {
-            const m = Math.floor(secs / 60).toString().padStart(2, '0');
-            const s = Math.floor(secs % 60).toString().padStart(2, '0');
-            return `${m}:${s}`;
-        };
-        
-        document.getElementById("stat-time").innerText = formatTime(this.timeElapsed);
-        document.getElementById("stat-spawned").innerText = this.statsSpawned;
-        document.getElementById("stat-killed").innerText = this.statsKilled;
-        document.getElementById("stat-gold").innerText = Math.round(this.statsGoldEarned);
-        document.getElementById("stat-era").innerText = ERA_DATA[this.playerEra].name;
+
+        el("stat-time").innerText = fmtTime(this.timeElapsed);
+        el("stat-spawned").innerText = this.statsSpawned;
+        el("stat-killed").innerText = this.statsKilled;
+        el("stat-gold").innerText = Math.round(this.statsGoldEarned);
+        el("stat-era").innerText = ERA_DATA[this.playerEra].name;
     }
 
-    // ==========================================================================
-    // USER INPUT LISTENERS
-    // ==========================================================================
+    leaveMatch() {
+        this.clearGraceTimer();
+        if (this.net) {
+            try { this.net.leave(); } catch (e) {}
+            this.net = null;
+        }
+        this.mode = 'solo';
+        this.gameState = 'menu';
+        document.body.classList.remove('is-multiplayer');
+        const badge = el("mp-badge");
+        if (badge) badge.classList.add('hidden');
+        for (const id of ["gameover-modal", "join-modal", "lobby-modal"]) {
+            const m = el(id); if (m) m.classList.add("hidden");
+        }
+        this.showMenuView('menu');
+        el("intro-modal").classList.remove("hidden");
+    }
+
+    // ----------------------------------------------------------------------
+    // MENU + ONLINE MATCHMAKING
+    // ----------------------------------------------------------------------
+
+    setupMenu() {
+        el("btn-solo").addEventListener("click", () => this.startMatch('solo'));
+        el("btn-create").addEventListener("click", () => this.createOnline());
+        el("btn-join").addEventListener("click", () => this.showJoin());
+
+        el("btn-join-confirm").addEventListener("click", () => this.joinOnline());
+        el("btn-join-back").addEventListener("click", () => { el("join-modal").classList.add("hidden"); el("intro-modal").classList.remove("hidden"); });
+        el("join-code-input").addEventListener("keydown", (e) => { if (e.key === "Enter") this.joinOnline(); });
+
+        el("btn-lobby-cancel").addEventListener("click", () => this.cancelOnline());
+        el("btn-copy-code").addEventListener("click", () => {
+            const code = el("lobby-code").innerText.trim();
+            if (code && navigator.clipboard) navigator.clipboard.writeText(code).catch(() => {});
+            el("btn-copy-code").innerText = "Copied!";
+            setTimeout(() => { el("btn-copy-code").innerText = "Copy"; }, 1200);
+        });
+
+        const howtoToggle = el("howto-toggle");
+        if (howtoToggle) howtoToggle.addEventListener("click", () => el("howto-body").classList.toggle("open"));
+    }
+
+    showMenuView() {
+        el("intro-modal").classList.remove("hidden");
+        el("join-modal").classList.add("hidden");
+        el("lobby-modal").classList.add("hidden");
+    }
+
+    showJoin() {
+        el("intro-modal").classList.add("hidden");
+        el("join-modal").classList.remove("hidden");
+        el("join-error").innerText = "";
+        el("join-code-input").value = "";
+        el("join-code-input").focus();
+    }
+
+    setLobby(status, code) {
+        el("lobby-status").innerText = status;
+        const codeWrap = el("lobby-code-wrap");
+        if (code) {
+            codeWrap.classList.remove("hidden");
+            el("lobby-code").innerText = code;
+        } else {
+            codeWrap.classList.add("hidden");
+        }
+    }
+
+    async ensureNet() {
+        if (this.net) return this.net;
+        const mod = await import('./net.js');
+        this.net = mod.EraNet;
+        return this.net;
+    }
+
+    async createOnline() {
+        el("intro-modal").classList.add("hidden");
+        el("lobby-modal").classList.remove("hidden");
+        this.setLobby("Connecting to server…", null);
+        try {
+            const net = await this.ensureNet();
+            const code = await net.createGame();
+            this.setLobby("Waiting for your opponent to join…", code);
+            this._started = false;
+            net.onMeta((meta) => {
+                if (!meta) return;
+                if (!this._started && meta.state === 'playing' && meta.guest) {
+                    this._started = true;
+                    this.beginAs('host');
+                }
+            });
+        } catch (e) {
+            console.error(e);
+            this.setLobby("Could not create match: " + (e && e.message ? e.message : e), null);
+        }
+    }
+
+    async joinOnline() {
+        const code = (el("join-code-input").value || "").trim().toUpperCase();
+        if (code.length < 4) { el("join-error").innerText = "Enter the 4-character code."; return; }
+        el("join-error").innerText = "Joining…";
+        try {
+            const net = await this.ensureNet();
+            await net.joinGame(code);
+            this._started = true;
+            el("join-modal").classList.add("hidden");
+            this.beginAs('guest');
+        } catch (e) {
+            console.error(e);
+            el("join-error").innerText = e && e.message ? e.message : "Failed to join.";
+        }
+    }
+
+    beginAs(role) {
+        this.startMatch(role);
+        if (role === 'host') {
+            this.net.onCommand((cmd) => this.onGuestCommand(cmd));
+        } else {
+            this.net.onSnapshot((snap) => this.applySnapshot(snap));
+        }
+        // Both sides: authoritative result / intentional-leave via meta, plus a
+        // grace-guarded opponent-disconnect via presence (survives transient blips).
+        this.net.onMeta((meta) => this.handleMetaUpdate(meta));
+        this.net.onOpponentPresence((present) => this.handleOpponentPresence(present));
+    }
+
+    handleMetaUpdate(meta) {
+        if (!meta || this._matchOver) return;
+        if (meta.winner) {
+            // Authoritative result decided by the host's simulation.
+            const myTeam = this.mode === 'guest' ? 'enemy' : 'player';
+            this._matchOver = true;
+            this.gameState = meta.winner === myTeam ? 'victory' : 'defeat';
+            this.showGameOver(this.gameState === 'victory', true);
+        } else if (meta.state === 'ended') {
+            // Opponent intentionally left the match.
+            this.handleOpponentLeft();
+        }
+    }
+
+    handleOpponentPresence(present) {
+        if (this._matchOver) return;
+        if (present) {
+            if (this._oppGraceTimer) { clearTimeout(this._oppGraceTimer); this._oppGraceTimer = null; }
+        } else if (!this._oppGraceTimer) {
+            // Wait out transient network blips before declaring the opponent gone.
+            this._oppGraceTimer = setTimeout(() => {
+                this._oppGraceTimer = null;
+                if (!this._matchOver && this.gameState === 'running') this.handleOpponentLeft();
+            }, 8000);
+        }
+    }
+
+    clearGraceTimer() {
+        if (this._oppGraceTimer) { clearTimeout(this._oppGraceTimer); this._oppGraceTimer = null; }
+    }
+
+    handleOpponentLeft() {
+        if (this._matchOver || this.gameState !== 'running') return;
+        this._matchOver = true;
+        this.gameState = 'victory';
+        const modal = el("gameover-modal");
+        modal.classList.remove("hidden", "defeat-style");
+        modal.classList.add("victory-style");
+        el("gameover-title").innerText = "OPPONENT LEFT";
+        el("gameover-subtitle").innerText = "Your opponent disconnected. The battlefield is yours.";
+        el("stat-time").innerText = fmtTime(this.timeElapsed);
+        el("stat-spawned").innerText = this.statsSpawned;
+        el("stat-killed").innerText = this.statsKilled;
+        el("stat-gold").innerText = Math.round(this.statsGoldEarned);
+        el("stat-era").innerText = ERA_DATA[this.playerEra].name;
+    }
+
+    cancelOnline() {
+        this.clearGraceTimer();
+        if (this.net) { try { this.net.leave(); } catch (e) {} this.net = null; }
+        this._started = false;
+        el("lobby-modal").classList.add("hidden");
+        el("intro-modal").classList.remove("hidden");
+    }
+
+    // ----------------------------------------------------------------------
+    // INPUT LISTENERS
+    // ----------------------------------------------------------------------
 
     setupEventListeners() {
-        // Spawners
         for (let i = 1; i <= 3; i++) {
-            document.getElementById(`spawn-u${i}`).addEventListener("click", () => {
-                if (this.gameState === 'running') this.spawnPlayerUnit(i - 1);
-            });
+            el(`spawn-u${i}`).addEventListener("click", () => this.playerSpawn(i - 1));
         }
-        
-        // Tower shop
-        document.getElementById("buy-tower-slot").addEventListener("click", () => {
-            if (this.gameState === 'running') this.buyTowerSlot();
+        el("buy-tower-slot").addEventListener("click", () => this.playerBuySlot());
+        el("buy-tower").addEventListener("click", () => this.playerBuildTower());
+        el("evolve-btn").addEventListener("click", () => this.playerEvolve());
+        el("special-btn").addEventListener("click", () => this.playerSpecial());
+
+        el("pause-btn").addEventListener("click", (e) => {
+            if (this.mode !== 'solo') return; // pausing is disabled online
+            if (this.gameState === 'running') { this.gameState = 'paused'; e.target.innerText = "RESUME"; }
+            else if (this.gameState === 'paused') { this.gameState = 'running'; e.target.innerText = "PAUSE"; }
         });
-        document.getElementById("buy-tower").addEventListener("click", () => {
-            if (this.gameState === 'running') this.buildTower();
+
+        el("restart-btn").addEventListener("click", () => {
+            if (this.mode !== 'solo') { this.leaveMatch(); return; }
+            if (confirm("Restart the match?")) this.startMatch('solo');
         });
-        
-        // Action triggers
-        document.getElementById("evolve-btn").addEventListener("click", () => {
-            if (this.gameState === 'running') this.evolveEra();
-        });
-        document.getElementById("special-btn").addEventListener("click", () => {
-            if (this.gameState === 'running') this.triggerPlayerSpecial();
-        });
-        
-        // Game control buttons
-        document.getElementById("pause-btn").addEventListener("click", (e) => {
-            if (this.gameState === 'running') {
-                this.gameState = 'paused';
-                e.target.innerText = "RESUME";
-            } else if (this.gameState === 'paused') {
-                this.gameState = 'running';
-                e.target.innerText = "PAUSE";
-            }
-        });
-        
-        document.getElementById("speed-btn").addEventListener("click", (e) => {
-            if (this.gameSpeed === 1) {
-                this.gameSpeed = 2;
-                e.target.innerText = "SPEED: 2x";
+
+        el("menu-btn").addEventListener("click", () => {
+            if (this.mode !== 'solo') {
+                if (confirm("Leave the online match?")) this.leaveMatch();
             } else {
-                this.gameSpeed = 1;
-                e.target.innerText = "SPEED: 1x";
+                this.gameState = 'menu';
+                this.leaveMatch();
             }
         });
-        
-        document.getElementById("restart-btn").addEventListener("click", () => {
-            if (confirm("Are you sure you want to restart the match?")) {
-                this.startGame();
-            }
+
+        el("start-game-btn") && el("start-game-btn").addEventListener("click", () => this.startMatch('solo'));
+        el("play-again-btn").addEventListener("click", () => {
+            if (this.mode === 'solo') this.startMatch('solo');
+            else this.leaveMatch();
         });
-        
-        // Modal Start triggers
-        document.getElementById("start-game-btn").addEventListener("click", () => {
-            this.startGame();
-        });
-        document.getElementById("play-again-btn").addEventListener("click", () => {
-            this.startGame();
-        });
-        
-        // Keyboard Hotkeys
+
+        // Keyboard hotkeys
         window.addEventListener("keydown", (e) => {
             if (this.gameState !== 'running') return;
-            
-            if (e.key === '1') this.spawnPlayerUnit(0);
-            if (e.key === '2') this.spawnPlayerUnit(1);
-            if (e.key === '3') this.spawnPlayerUnit(2);
-            if (e.key.toLowerCase() === 'e') this.evolveEra();
-            if (e.key === ' ') {
-                e.preventDefault(); // prevent scroll
-                this.triggerPlayerSpecial();
-            }
+            if (e.target && e.target.tagName === 'INPUT') return;
+            if (e.key === '1') this.playerSpawn(0);
+            else if (e.key === '2') this.playerSpawn(1);
+            else if (e.key === '3') this.playerSpawn(2);
+            else if (e.key.toLowerCase() === 'e') this.playerEvolve();
+            else if (e.key === ' ') { e.preventDefault(); this.playerSpecial(); }
+            else if (e.key === '+' || e.key === '=') this.setZoom(this.zoom * 1.15);
+            else if (e.key === '-' || e.key === '_') this.setZoom(this.zoom / 1.15);
+            else if (e.key === '0') this.fitView();
         });
-        
-        // Drag scrolling logic on Canvas
-        this.canvas.addEventListener("mousedown", (e) => {
+
+        // Drag to pan
+        const pointerDown = (clientX) => {
             this.isDragging = true;
-            this.dragStartX = e.clientX;
-            this.dragCameraStartX = this.cameraX;
-            this.cameraVelocity = 0; // stop sliding
-        });
-        
-        window.addEventListener("mousemove", (e) => {
-            if (!this.isDragging) return;
-            
-            const dx = e.clientX - this.dragStartX;
-            this.cameraX = this.dragCameraStartX - dx;
-            this.cameraX = Math.max(0, Math.min(VIRTUAL_WIDTH - this.canvas.width, this.cameraX));
-        });
-        
-        window.addEventListener("mouseup", (e) => {
-            if (!this.isDragging) return;
-            this.isDragging = false;
-            
-            // Calculate a sliding velocity based on final movement speed
-            const dx = e.clientX - this.dragStartX;
-            this.cameraVelocity = -dx * 0.15; // slide throw speed
-        });
-        
-        // Edge Scrolling (Hover mouse on edges scroll)
-        this.canvas.addEventListener("mousemove", (e) => {
-            if (this.isDragging) return;
-            
-            const rect = this.canvas.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            
-            const edgeWidth = 90;
-            if (mouseX < edgeWidth) {
-                // Scroll Left
-                this.cameraVelocity = -8 * (1 - mouseX / edgeWidth);
-            } else if (mouseX > rect.width - edgeWidth) {
-                // Scroll Right
-                this.cameraVelocity = 8 * (1 - (rect.width - mouseX) / edgeWidth);
-            } else {
-                this.cameraVelocity *= 0.8; // Damping
-            }
-        });
-        
-        // Mousewheel scrolling
-        this.canvas.addEventListener("wheel", (e) => {
-            e.preventDefault();
-            this.cameraX += e.deltaY * 0.5;
-            this.cameraX = Math.max(0, Math.min(VIRTUAL_WIDTH - this.canvas.width, this.cameraX));
-        }, { passive: false });
-        
-        // Scroll HUD buttons
-        const scrollBtnLeft = document.getElementById("scroll-left-btn");
-        const scrollBtnRight = document.getElementById("scroll-right-btn");
-        
-        let scrollBtnInterval = null;
-        
-        const startScroll = (dir) => {
-            scrollBtnInterval = setInterval(() => {
-                this.cameraX += dir * 15;
-                this.cameraX = Math.max(0, Math.min(VIRTUAL_WIDTH - this.canvas.width, this.cameraX));
-            }, 16);
-        };
-        
-        const stopScroll = () => {
-            if (scrollBtnInterval) {
-                clearInterval(scrollBtnInterval);
-                scrollBtnInterval = null;
-            }
-        };
-        
-        scrollBtnLeft.addEventListener("mousedown", () => startScroll(-1));
-        scrollBtnRight.addEventListener("mousedown", () => startScroll(1));
-        
-        scrollBtnLeft.addEventListener("mouseup", stopScroll);
-        scrollBtnRight.addEventListener("mouseup", stopScroll);
-        scrollBtnLeft.addEventListener("mouseleave", stopScroll);
-        scrollBtnRight.addEventListener("mouseleave", stopScroll);
-        
-        // Touch supports (drag)
-        this.canvas.addEventListener("touchstart", (e) => {
-            this.isDragging = true;
-            this.dragStartX = e.touches[0].clientX;
+            this.dragMoved = false;
+            this.dragStartX = clientX;
             this.dragCameraStartX = this.cameraX;
             this.cameraVelocity = 0;
-        }, { passive: true });
-        
-        this.canvas.addEventListener("touchmove", (e) => {
+        };
+        const pointerMove = (clientX) => {
             if (!this.isDragging) return;
-            const dx = e.touches[0].clientX - this.dragStartX;
+            const dx = (clientX - this.dragStartX) / this.zoom;
+            if (Math.abs(clientX - this.dragStartX) > 3) this.dragMoved = true;
             this.cameraX = this.dragCameraStartX - dx;
-            this.cameraX = Math.max(0, Math.min(VIRTUAL_WIDTH - this.canvas.width, this.cameraX));
-        }, { passive: true });
-        
-        this.canvas.addEventListener("touchend", () => {
+            this.clampCamera();
+        };
+        const pointerUp = (clientX) => {
+            if (!this.isDragging) return;
             this.isDragging = false;
-        });
+            const dx = (clientX - this.dragStartX) / this.zoom;
+            this.cameraVelocity = -dx * 0.15;
+        };
+
+        this.canvas.addEventListener("mousedown", (e) => pointerDown(e.clientX));
+        window.addEventListener("mousemove", (e) => pointerMove(e.clientX));
+        window.addEventListener("mouseup", (e) => pointerUp(e.clientX));
+
+        this.canvas.addEventListener("touchstart", (e) => pointerDown(e.touches[0].clientX), { passive: true });
+        this.canvas.addEventListener("touchmove", (e) => pointerMove(e.touches[0].clientX), { passive: true });
+        this.canvas.addEventListener("touchend", () => { this.isDragging = false; });
+
+        // Wheel = zoom toward cursor
+        this.canvas.addEventListener("wheel", (e) => {
+            e.preventDefault();
+            const rect = this.canvas.getBoundingClientRect();
+            const anchor = e.clientX - rect.left;
+            const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+            this.setZoom(this.zoom * factor, anchor);
+        }, { passive: false });
+
+        // Zoom control buttons
+        el("zoom-in").addEventListener("click", () => this.setZoom(this.zoom * 1.2));
+        el("zoom-out").addEventListener("click", () => this.setZoom(this.zoom / 1.2));
+        el("zoom-fit").addEventListener("click", () => this.fitView());
+
+        // Scroll arrows (hold to pan)
+        const scrollBtnLeft = el("scroll-left-btn");
+        const scrollBtnRight = el("scroll-right-btn");
+        let scrollInterval = null;
+        const startScroll = (dir) => {
+            stopScroll();
+            scrollInterval = setInterval(() => {
+                this.cameraX += dir * 22 / this.zoom;
+                this.clampCamera();
+            }, 16);
+        };
+        const stopScroll = () => { if (scrollInterval) { clearInterval(scrollInterval); scrollInterval = null; } };
+        scrollBtnLeft.addEventListener("mousedown", () => startScroll(-1));
+        scrollBtnRight.addEventListener("mousedown", () => startScroll(1));
+        for (const b of [scrollBtnLeft, scrollBtnRight]) {
+            b.addEventListener("mouseup", stopScroll);
+            b.addEventListener("mouseleave", stopScroll);
+        }
     }
 }
 
 // Instantiate engine when DOM is ready
 window.addEventListener("DOMContentLoaded", () => {
-    const game = new Game();
-    // Start drawing loops
+    game = new Game();
+    window.game = game; // expose for debugging / dev console
     requestAnimationFrame((t) => game.loop(t));
 });
