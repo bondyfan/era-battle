@@ -266,9 +266,9 @@ body {
     background-color: var(--panel-bg);
     backdrop-filter: blur(10px);
     display: grid;
-    grid-template-columns: 2fr 1.35fr 1.35fr 1.6fr 1fr;
+    grid-template-columns: 2.9fr 1.1fr 1.25fr 1.15fr 0.95fr;
     gap: 14px;
-    padding: 16px 22px;
+    padding: 14px 20px;
     z-index: 10;
 }
 
@@ -308,6 +308,102 @@ body {
     grid-template-columns: 1fr;
     grid-template-rows: repeat(3, 1fr);
     gap: 4px;
+}
+
+/* Spawn & Evolve unit cards */
+.army-group .buttons-grid.unit-cards {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.unit-card {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.unit-card .unit-btn {
+    flex: 1 1 auto;
+    padding: 6px 4px;
+}
+
+.unit-card .unit-name {
+    font-size: 11px;
+    line-height: 1.15;
+}
+
+.unit-btn.locked-unit {
+    border-color: #a16207;
+    background: linear-gradient(180deg, #2a2410 0%, #131007 100%);
+}
+
+.unit-btn.locked-unit .unit-cost {
+    color: #fcd34d;
+    font-size: 11px;
+}
+
+.evolve-unit-btn {
+    flex: 0 0 auto;
+    background: linear-gradient(180deg, #4c1d95 0%, #2e1065 100%);
+    border-color: #6d28d9;
+    padding: 5px 7px;
+    gap: 2px;
+    align-items: stretch;
+    text-align: left;
+}
+
+.evolve-unit-btn:hover:not(.disabled):not(:disabled) {
+    border-color: #a855f7;
+    box-shadow: 0 0 10px rgba(168, 85, 247, 0.3);
+}
+
+.evo-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 6px;
+    width: 100%;
+}
+
+.evo-label {
+    font-size: 10.5px;
+    font-weight: 800;
+    color: #ede9fe;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.evo-cost {
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--gold-color);
+    flex: 0 0 auto;
+}
+
+.evo-stats {
+    font-size: 9px;
+    font-weight: 600;
+    color: #c4b5fd;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Small next-level stat line under tower/upgrade buttons */
+.btn-stat {
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-top: 3px;
+    white-space: nowrap;
+}
+
+/* Special group = one prominent button */
+.special-group .buttons-grid {
+    grid-template-columns: 1fr;
 }
 
 /* ==========================================================================

@@ -343,6 +343,11 @@ const RANGE_UPGRADE_COSTS = [180, 320, 560, 950, 1600, 2700]; // cost to go from
 const MAX_RANGE_LEVEL = 6;
 const RANGED_TYPES = ['ranged', 'hitscan', 'laser', 'laser_heavy'];
 
+// Per-unit evolution (replaces the old whole-army "Evolve Era").
+// Each of the 3 unit slots advances through the 5 eras independently, for gold.
+const UNIT_EVOLVE_MULT = 2.5;   // evolve cost = next-tier unit's spawn cost * this
+const UNIT3_UNLOCK_COST = 50;   // the heavy unit (slot 3) must be unlocked first
+
 // ==========================================================================
 // PARTICLE SYSTEM
 // ==========================================================================
@@ -1089,10 +1094,9 @@ class Unit {
             // Reward the opposing commander's economy
             if (this.team === 'enemy') {
                 game.addGold(this.goldReward);
-                game.addXp(this.xpReward);
                 game.statsKilled++;
             } else {
-                game.awardEnemy(this.goldReward, this.xpReward);
+                game.awardEnemy(this.goldReward);
             }
         }
     }
@@ -2184,13 +2188,18 @@ class Game {
 
     initGame() {
         this.gold = 150;
-        this.xp = 0;
-        this.playerEra = 0;
+        this.playerEra = 0; // derived = highest unit tier (drives base/tower/special/scenery theme)
         this.enemyEra = 0;
 
         // Enemy economy (used by online host + kept harmlessly in solo)
         this.enemyGold = 150;
-        this.enemyXp = 0;
+
+        // Per-unit evolution tiers (0..4) — each of the 3 unit slots evolves on its own
+        this.playerUnitTier = [0, 0, 0];
+        this.enemyUnitTier = [0, 0, 0];
+        // Heavy unit (slot 3 / Mammoth Rider line) must be unlocked before recruiting
+        this.playerUnit3Unlocked = false;
+        this.enemyUnit3Unlocked = false;
 
         this.playerBase = new Base('player');
         this.enemyBase = new Base('enemy');
@@ -2249,45 +2258,36 @@ class Game {
         }
     }
 
-    addXp(amount) {
-        this.xp += amount;
-        const xEl = el("xp-value");
-        xEl.classList.remove("xp-pulse");
-        void xEl.offsetWidth;
-        xEl.classList.add("xp-pulse");
-        this.refreshXpUI();
-    }
-
-    awardEnemy(gold, xp) {
+    awardEnemy(gold) {
         this.enemyGold += gold;
-        this.enemyXp += xp;
         this.enemyStatsGold += gold;
         this.enemyStatsKilled++;
     }
 
-    refreshXpUI() {
-        const nextXp = ERA_DATA[this.playerEra].evolveXp;
-        el("xp-value").innerText = `${Math.round(this.xp)} / ${this.playerEra >= 4 ? 'MAX' : nextXp}`;
-        const evolveBtn = el("evolve-btn");
-        const evolveCostText = el("evolve-cost-text");
-        if (this.playerEra < 4 && this.xp >= nextXp) {
-            evolveBtn.classList.remove("disabled");
-            evolveBtn.classList.add("ready-to-evolve");
-            evolveCostText.innerText = "READY!";
-        } else {
-            evolveBtn.classList.add("disabled");
-            evolveBtn.classList.remove("ready-to-evolve");
-            evolveCostText.innerText = this.playerEra >= 4 ? "Max Era Reached" : `Need ${nextXp} XP`;
-        }
+    // Visual theme era = the team's most-advanced unit line
+    recomputeEras() {
+        this.playerEra = Math.max(this.playerUnitTier[0], this.playerUnitTier[1], this.playerUnitTier[2]);
+        this.enemyEra = Math.max(this.enemyUnitTier[0], this.enemyUnitTier[1], this.enemyUnitTier[2]);
+    }
+
+    unitEvolveCost(slot, tier) {
+        if (tier >= 4) return Infinity;
+        return Math.round(ERA_DATA[tier + 1].units[slot].cost * UNIT_EVOLVE_MULT);
     }
 
     // ----------------------------------------------------------------------
     // ACTIONS (unified for both teams)
     // ----------------------------------------------------------------------
 
+    isUnit3Unlocked(team) {
+        return team === 'player' ? this.playerUnit3Unlocked : this.enemyUnit3Unlocked;
+    }
+
     trySpawn(team, index) {
-        const era = team === 'player' ? this.playerEra : this.enemyEra;
-        const stats = ERA_DATA[era].units[index];
+        // Heavy unit gated behind a one-time unlock
+        if (index === 2 && !this.isUnit3Unlocked(team)) return false;
+        const tier = (team === 'player' ? this.playerUnitTier : this.enemyUnitTier)[index];
+        const stats = ERA_DATA[tier].units[index];
         if (!stats) return false;
         if (team === 'player') {
             if (this.gold < stats.cost) return false;
@@ -2298,13 +2298,13 @@ class Game {
             this.enemyGold -= stats.cost;
             this.enemyStatsSpawned++;
         }
-        this.addUnitFree(team, era, index);
+        this.addUnitFree(team, tier, index);
         return true;
     }
 
-    addUnitFree(team, era, index) {
-        const stats = ERA_DATA[era].units[index];
-        const u = new Unit(era, index, team, stats);
+    addUnitFree(team, tier, index) {
+        const stats = ERA_DATA[tier].units[index];
+        const u = new Unit(tier, index, team, stats);
         u.id = this.nextUnitId++;
         (team === 'player' ? this.playerUnits : this.enemyUnits).push(u);
         const gx = team === 'player' ? PLAYER_BASE_X + 30 : ENEMY_BASE_X - 30;
@@ -2312,36 +2312,45 @@ class Game {
         return u;
     }
 
-    evolveTeam(team) {
+    unlockUnit3(team) {
+        if (this.isUnit3Unlocked(team)) return;
         if (team === 'player') {
-            const need = ERA_DATA[this.playerEra].evolveXp;
-            if (this.playerEra < 4 && this.xp >= need) {
-                this.xp -= need;
-                this.playerEra++;
-                this.evolveFx('player');
-                el("current-era-text").innerText = ERA_DATA[this.playerEra].name;
-                this.refreshXpUI();
-                this.updateButtonsUI();
-            }
+            if (this.gold < UNIT3_UNLOCK_COST) return;
+            this.gold -= UNIT3_UNLOCK_COST;
+            this.playerUnit3Unlocked = true;
+            this.particles.push(new Particle(PLAYER_BASE_X + 30, GROUND_Y - 40, '#fbbf24', 'text', 'UNLOCKED!', 18));
+            this.updateButtonsUI();
         } else {
-            const need = ERA_DATA[this.enemyEra].evolveXp;
-            if (this.enemyEra < 4 && this.enemyXp >= need) {
-                this.enemyXp -= need;
-                this.enemyEra++;
-                this.evolveFx('enemy');
-            }
+            if (this.enemyGold < UNIT3_UNLOCK_COST) return;
+            this.enemyGold -= UNIT3_UNLOCK_COST;
+            this.enemyUnit3Unlocked = true;
         }
     }
 
-    evolveFx(team) {
+    // Evolve a single unit slot to the next era's equivalent (for gold)
+    evolveUnit(team, slot) {
+        if (slot === 2 && !this.isUnit3Unlocked(team)) return;
+        const tiers = team === 'player' ? this.playerUnitTier : this.enemyUnitTier;
+        if (tiers[slot] >= 4) return;
+        const cost = this.unitEvolveCost(slot, tiers[slot]);
+        if (team === 'player') {
+            if (this.gold < cost) return;
+            this.gold -= cost;
+        } else {
+            if (this.enemyGold < cost) return;
+            this.enemyGold -= cost;
+        }
+        tiers[slot]++;
+        this.recomputeEras();
         const bx = team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X;
         const col = team === 'player' ? '#a855f7' : '#ef4444';
-        for (let i = 0; i < 40; i++) {
-            this.particles.push(new Particle(bx + (Math.random() - 0.5) * 50, GROUND_Y - 100 - Math.random() * 150, col, 'spark', '', 4));
+        for (let i = 0; i < 24; i++) {
+            this.particles.push(new Particle(bx + (Math.random() - 0.5) * 50, GROUND_Y - 90 - Math.random() * 130, col, 'spark', '', 4));
         }
-        this.particles.push(new Particle(bx, GROUND_Y - 260, col, 'text', team === 'player' ? "EVOLVED ERA!" : "ENEMY EVOLVED!", 20));
+        this.particles.push(new Particle(bx, GROUND_Y - 240, col, 'text', ERA_DATA[tiers[slot]].units[slot].name.toUpperCase() + "!", 18));
         const base = team === 'player' ? this.playerBase : this.enemyBase;
         for (const t of base.towers) t.cooldownTimer = 0;
+        if (team === 'player') this.updateButtonsUI();
     }
 
     rangeBonus(team) {
@@ -2435,13 +2444,19 @@ class Game {
 
     playerSpawn(index) {
         if (this.gameState !== 'running') return;
+        // Heavy unit: while locked, the button acts as the unlock button
+        if (index === 2 && !this.playerUnit3Unlocked) {
+            if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'unlock' }); return; }
+            this.unlockUnit3('player');
+            return;
+        }
         if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'spawn', i: index }); return; }
         this.trySpawn('player', index);
     }
-    playerEvolve() {
+    playerEvolveUnit(index) {
         if (this.gameState !== 'running') return;
-        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'evolve' }); return; }
-        this.evolveTeam('player');
+        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'evolveu', i: index }); return; }
+        this.evolveUnit('player', index);
     }
     playerSpecial() {
         if (this.gameState !== 'running') return;
@@ -2473,7 +2488,8 @@ class Game {
         if (this.mode !== 'host' || this.gameState !== 'running' || !cmd) return;
         switch (cmd.a) {
             case 'spawn': this.trySpawn('enemy', cmd.i | 0); break;
-            case 'evolve': this.evolveTeam('enemy'); break;
+            case 'unlock': this.unlockUnit3('enemy'); break;
+            case 'evolveu': this.evolveUnit('enemy', cmd.i | 0); break;
             case 'special': this.triggerSpecial('enemy'); break;
             case 'slot': this.buyTowerSlot('enemy'); break;
             case 'tower': this.buildTower('enemy'); break;
@@ -2487,12 +2503,41 @@ class Game {
     // ----------------------------------------------------------------------
 
     updateButtonsUI() {
-        const eraConfig = ERA_DATA[this.playerEra];
-        for (let i = 1; i <= 3; i++) {
-            const btn = el(`spawn-u${i}`);
-            const unit = eraConfig.units[i - 1];
-            btn.querySelector(".unit-name").innerText = unit.name;
-            btn.querySelector(".unit-cost").innerText = `${unit.cost}g`;
+        // Per-unit spawn + evolve cards
+        for (let i = 0; i < 3; i++) {
+            const tier = this.playerUnitTier[i];
+            const unit = ERA_DATA[tier].units[i];
+            const spawnBtn = el(`spawn-u${i + 1}`);
+            const evoBtn = el(`evolve-u${i + 1}`);
+            const evoStats = el(`evo-stats-${i + 1}`);
+
+            if (i === 2 && !this.playerUnit3Unlocked) {
+                // Heavy unit still locked — spawn button becomes the unlock button
+                spawnBtn.querySelector(".unit-name").innerText = unit.name;
+                spawnBtn.querySelector(".unit-cost").innerText = `🔒 Unlock ${UNIT3_UNLOCK_COST}g`;
+                spawnBtn.classList.add("locked-unit");
+                evoBtn.disabled = true;
+                evoBtn.querySelector(".evo-label").innerText = "Locked";
+                evoBtn.querySelector(".evo-cost").innerText = "";
+                evoStats.innerText = "Unlock the unit first";
+                continue;
+            }
+            spawnBtn.classList.remove("locked-unit");
+            spawnBtn.querySelector(".unit-name").innerText = `${unit.name} · T${tier + 1}`;
+            spawnBtn.querySelector(".unit-cost").innerText = `${unit.cost}g`;
+
+            if (tier >= 4) {
+                evoBtn.disabled = true;
+                evoBtn.querySelector(".evo-label").innerText = "MAX TIER";
+                evoBtn.querySelector(".evo-cost").innerText = "";
+                evoStats.innerText = `HP ${unit.hp} · ATK ${unit.damage} · SPD ${unit.speed}`;
+            } else {
+                const next = ERA_DATA[tier + 1].units[i];
+                evoBtn.disabled = false;
+                evoBtn.querySelector(".evo-label").innerText = `▲ ${next.name}`;
+                evoBtn.querySelector(".evo-cost").innerText = `${this.unitEvolveCost(i, tier)}g`;
+                evoStats.innerText = `HP ${next.hp} · ATK ${next.damage} · SPD ${next.speed}`;
+            }
         }
 
         const slotBtn = el("buy-tower-slot");
@@ -2519,39 +2564,53 @@ class Game {
             towerBtn.querySelector(".tower-label").innerText = (this.playerBase.unlockedSlots === 0) ? "Unlock Slot First" : "Slots Full";
         }
 
-        // Range upgrade button
+        // Range upgrade button (with next-level reach preview)
         const rBtn = el("upgrade-range");
         const rCost = el("range-cost");
+        const rStat = el("range-stat");
         if (this.rangeLevel >= MAX_RANGE_LEVEL) {
             rBtn.disabled = true;
             rBtn.querySelector(".tower-label").innerText = "Range MAX";
             rCost.innerText = "MAX";
+            rStat.innerText = `Reach +${this.rangeLevel * RANGE_BONUS_PER_LEVEL}`;
         } else {
             rBtn.disabled = false;
             rBtn.querySelector(".tower-label").innerText = `Range → Lv ${this.rangeLevel + 1}`;
             rCost.innerText = `${RANGE_UPGRADE_COSTS[this.rangeLevel]}g`;
+            rStat.innerText = `Reach +${(this.rangeLevel + 1) * RANGE_BONUS_PER_LEVEL} px`;
         }
 
-        // Special buy/upgrade button
+        // Special buy/upgrade button (with next-level power preview)
         const sBtn = el("upgrade-special");
         const sCost = el("special-upg-cost");
+        const sStat = el("special-stat");
         if (this.specialLevel >= MAX_SPECIAL_LEVEL) {
             sBtn.disabled = true;
             sBtn.querySelector(".tower-label").innerText = "Special MAX";
             sCost.innerText = "MAX";
+            sStat.innerText = `Power ×${SPECIAL_LEVEL_MULT[this.specialLevel]}`;
         } else {
             sBtn.disabled = false;
             sBtn.querySelector(".tower-label").innerText = this.specialLevel === 0 ? "Buy Special" : `Special → Lv ${this.specialLevel + 1}`;
             sCost.innerText = `${SPECIAL_UPGRADE_COSTS[this.specialLevel]}g`;
+            sStat.innerText = `Power ×${SPECIAL_LEVEL_MULT[this.specialLevel + 1]}`;
         }
     }
 
     updateAffordance() {
-        const eraConfig = ERA_DATA[this.playerEra];
-        for (let i = 1; i <= 3; i++) {
-            const btn = el(`spawn-u${i}`);
-            if (this.gold < eraConfig.units[i - 1].cost) btn.classList.add("disabled");
-            else btn.classList.remove("disabled");
+        for (let i = 0; i < 3; i++) {
+            const tier = this.playerUnitTier[i];
+            const spawnBtn = el(`spawn-u${i + 1}`);
+            const evoBtn = el(`evolve-u${i + 1}`);
+            if (i === 2 && !this.playerUnit3Unlocked) {
+                // Spawn button = unlock; evolve stays disabled
+                spawnBtn.classList.toggle("disabled", this.gold < UNIT3_UNLOCK_COST);
+                evoBtn.classList.add("disabled");
+                continue;
+            }
+            spawnBtn.classList.toggle("disabled", this.gold < ERA_DATA[tier].units[i].cost);
+            if (tier >= 4) evoBtn.classList.add("disabled");
+            else evoBtn.classList.toggle("disabled", this.gold < this.unitEvolveCost(i, tier));
         }
         // Upgrade buttons grey out when unaffordable (but not when already maxed)
         const rMax = this.rangeLevel >= MAX_RANGE_LEVEL;
@@ -2602,9 +2661,17 @@ class Game {
         else if (this.timeElapsed >= 240) desiredEra = 2;
         else if (this.timeElapsed >= 90) desiredEra = 1;
 
-        if (desiredEra > this.enemyEra) {
-            this.enemyEra = desiredEra;
-            this.evolveFx('enemy');
+        // AI advances all its unit lines together by time (unlocks the heavy unit)
+        const prevEra = this.enemyEra;
+        this.enemyUnitTier[0] = this.enemyUnitTier[1] = this.enemyUnitTier[2] = desiredEra;
+        this.enemyUnit3Unlocked = true;
+        this.recomputeEras();
+        if (this.enemyEra > prevEra) {
+            for (let i = 0; i < 30; i++) {
+                this.particles.push(new Particle(ENEMY_BASE_X + (Math.random() - 0.5) * 50, GROUND_Y - 100 - Math.random() * 140, '#ef4444', 'spark', '', 4));
+            }
+            this.particles.push(new Particle(ENEMY_BASE_X, GROUND_Y - 250, '#ef4444', 'text', "ENEMY ADVANCES!", 18));
+            for (const t of this.enemyBase.towers) t.cooldownTimer = 0;
         }
 
         // AI gets stronger specials + longer range as the match wears on
@@ -2626,7 +2693,7 @@ class Game {
             if (rand > 0.85) unitIndex = 2;
             else if (rand > 0.50) unitIndex = 1;
 
-            this.addUnitFree('enemy', this.enemyEra, unitIndex);
+            this.addUnitFree('enemy', this.enemyUnitTier[unitIndex], unitIndex);
 
             if (this.playerUnits.length >= 4 && Math.random() < 0.25) {
                 this.triggerSpecial('enemy');
@@ -2749,14 +2816,16 @@ class Game {
             tm: Date.now(),
             ph: Math.round(this.playerBase.hp), eh: Math.round(this.enemyBase.hp),
             pe: this.playerEra, ee: this.enemyEra,
-            pg: Math.round(this.gold), pxp: Math.round(this.xp),
-            eg: Math.round(this.enemyGold), exp: Math.round(this.enemyXp),
+            pg: Math.round(this.gold),
+            eg: Math.round(this.enemyGold),
             pst: Math.round(this.specialTimer), est: Math.round(this.enemySpecialTimer),
             pt: this.playerBase.towers.length, et: this.enemyBase.towers.length,
             pus: this.playerBase.unlockedSlots, eus: this.enemyBase.unlockedSlots,
             es: this.enemyStatsSpawned, ek: this.enemyStatsKilled, egn: Math.round(this.enemyStatsGold),
             psl: this.specialLevel, esl: this.enemySpecialLevel,
             prl: this.rangeLevel, erl: this.enemyRangeLevel,
+            put: this.playerUnitTier, eut: this.enemyUnitTier,
+            pu3: this.playerUnit3Unlocked, eu3: this.enemyUnit3Unlocked,
             u, p, s,
             st: this.gameState,
             win: this.winner
@@ -2769,7 +2838,6 @@ class Game {
 
         // Guest is the host's opponent, so the guest's own economy = enemy* fields.
         this.gold = snap.eg;
-        this.xp = snap.exp;
         this.playerEra = snap.ee;
         this.enemyEra = snap.pe;
         this.specialTimer = snap.est;
@@ -2779,6 +2847,12 @@ class Game {
         this.enemySpecialLevel = snap.psl || 0;
         this.rangeLevel = snap.erl || 0;
         this.enemyRangeLevel = snap.prl || 0;
+
+        // Guest's own per-unit tiers + heavy-unit unlock (host's enemy side)
+        this.playerUnitTier = (snap.eut || [0, 0, 0]).slice();
+        this.enemyUnitTier = (snap.put || [0, 0, 0]).slice();
+        this.playerUnit3Unlocked = !!snap.eu3;
+        this.enemyUnit3Unlocked = !!snap.pu3;
 
         // Guest's own end-of-match stats (tracked authoritatively by the host)
         this.statsSpawned = snap.es || 0;
@@ -2799,7 +2873,6 @@ class Game {
         el("player-base-hp-text").innerText = `${Math.max(0, Math.round(snap.eh))}/${BASE_HP_MAX} HP`;
         el("enemy-base-hp-text").innerText = `${Math.max(0, Math.round(snap.ph))}/${BASE_HP_MAX} HP`;
         el("current-era-text").innerText = ERA_DATA[this.playerEra].name;
-        this.refreshXpUIGuest(snap);
         this.updateButtonsUI();
 
         // Units — mirror host-space into guest-space
@@ -2848,23 +2921,6 @@ class Game {
             this._matchOver = true;
             this.gameState = snap.st === 'victory' ? 'defeat' : 'victory';
             this.showGameOver(this.gameState === 'victory', true);
-        }
-    }
-
-    refreshXpUIGuest(snap) {
-        const era = this.playerEra;
-        const nextXp = ERA_DATA[era].evolveXp;
-        el("xp-value").innerText = `${Math.round(snap.exp)} / ${era >= 4 ? 'MAX' : nextXp}`;
-        const evolveBtn = el("evolve-btn");
-        const t = el("evolve-cost-text");
-        if (era < 4 && snap.exp >= nextXp) {
-            evolveBtn.classList.remove("disabled");
-            evolveBtn.classList.add("ready-to-evolve");
-            t.innerText = "READY!";
-        } else {
-            evolveBtn.classList.add("disabled");
-            evolveBtn.classList.remove("ready-to-evolve");
-            t.innerText = era >= 4 ? "Max Era Reached" : `Need ${nextXp} XP`;
         }
     }
 
@@ -3055,7 +3111,6 @@ class Game {
         this.updateButtonsUI();
         this.updateHud();
         this.updateAffordance();
-        this.refreshXpUI();
         this.updateSpecialUI();
     }
 
@@ -3293,11 +3348,13 @@ class Game {
         for (let i = 1; i <= 3; i++) {
             el(`spawn-u${i}`).addEventListener("click", () => this.playerSpawn(i - 1));
         }
+        for (let i = 1; i <= 3; i++) {
+            el(`evolve-u${i}`).addEventListener("click", () => this.playerEvolveUnit(i - 1));
+        }
         el("buy-tower-slot").addEventListener("click", () => this.playerBuySlot());
         el("buy-tower").addEventListener("click", () => this.playerBuildTower());
         el("upgrade-range").addEventListener("click", () => this.playerUpgradeRange());
         el("upgrade-special").addEventListener("click", () => this.playerUpgradeSpecial());
-        el("evolve-btn").addEventListener("click", () => this.playerEvolve());
         el("special-btn").addEventListener("click", () => this.playerSpecial());
 
         el("pause-btn").addEventListener("click", (e) => {
@@ -3333,7 +3390,6 @@ class Game {
             if (e.key === '1') this.playerSpawn(0);
             else if (e.key === '2') this.playerSpawn(1);
             else if (e.key === '3') this.playerSpawn(2);
-            else if (e.key.toLowerCase() === 'e') this.playerEvolve();
             else if (e.key === ' ') { e.preventDefault(); this.playerSpecial(); }
             else if (e.key === '+' || e.key === '=') this.setZoom(this.zoom * 1.15);
             else if (e.key === '-' || e.key === '_') this.setZoom(this.zoom / 1.15);

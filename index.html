@@ -28,11 +28,8 @@
                     <span id="gold-value" class="stat-value gold-text">150</span>
                 </div>
                 <div class="stat-box era-box">
+                    <span class="stat-label">AGE</span>
                     <span id="current-era-text" class="stat-value era-text">Stone Age</span>
-                </div>
-                <div class="stat-box">
-                    <span class="stat-label">XP</span>
-                    <span id="xp-value" class="stat-value xp-text">0 / 2000</span>
                 </div>
             </div>
 
@@ -67,21 +64,39 @@
 
         <!-- Controls panel -->
         <footer id="controls-panel">
-            <div class="control-group">
-                <h3>SPAWN UNITS</h3>
-                <div class="buttons-grid" id="unit-spawners">
-                    <button id="spawn-u1" class="btn unit-btn" data-unit="1" title="Shortcut: 1">
-                        <span class="unit-name">Clubman</span>
-                        <span class="unit-cost">15g</span>
-                    </button>
-                    <button id="spawn-u2" class="btn unit-btn" data-unit="2" title="Shortcut: 2">
-                        <span class="unit-name">Spearman</span>
-                        <span class="unit-cost">25g</span>
-                    </button>
-                    <button id="spawn-u3" class="btn unit-btn" data-unit="3" title="Shortcut: 3">
-                        <span class="unit-name">Mammoth Rider</span>
-                        <span class="unit-cost">100g</span>
-                    </button>
+            <div class="control-group army-group">
+                <h3>SPAWN &amp; EVOLVE</h3>
+                <div class="buttons-grid unit-cards" id="unit-spawners">
+                    <div class="unit-card">
+                        <button id="spawn-u1" class="btn unit-btn" data-unit="1" title="Shortcut: 1">
+                            <span class="unit-name">Clubman · T1</span>
+                            <span class="unit-cost">15g</span>
+                        </button>
+                        <button id="evolve-u1" class="btn evolve-unit-btn" title="Evolve this unit to the next era">
+                            <span class="evo-head"><span class="evo-label">▲ Hoplite</span><span class="evo-cost">112g</span></span>
+                            <span class="evo-stats" id="evo-stats-1">HP 110 · ATK 16 · SPD 1.2</span>
+                        </button>
+                    </div>
+                    <div class="unit-card">
+                        <button id="spawn-u2" class="btn unit-btn" data-unit="2" title="Shortcut: 2">
+                            <span class="unit-name">Spearman · T1</span>
+                            <span class="unit-cost">25g</span>
+                        </button>
+                        <button id="evolve-u2" class="btn evolve-unit-btn" title="Evolve this unit to the next era">
+                            <span class="evo-head"><span class="evo-label">▲ Archer</span><span class="evo-cost">162g</span></span>
+                            <span class="evo-stats" id="evo-stats-2">HP 90 · ATK 13 · SPD 1.0</span>
+                        </button>
+                    </div>
+                    <div class="unit-card">
+                        <button id="spawn-u3" class="btn unit-btn" data-unit="3" title="Shortcut: 3">
+                            <span class="unit-name">Mammoth Rider</span>
+                            <span class="unit-cost">🔒 Unlock 50g</span>
+                        </button>
+                        <button id="evolve-u3" class="btn evolve-unit-btn" title="Evolve this unit to the next era" disabled>
+                            <span class="evo-head"><span class="evo-label">Locked</span><span class="evo-cost"></span></span>
+                            <span class="evo-stats" id="evo-stats-3">Unlock the unit first</span>
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -105,21 +120,19 @@
                     <button id="upgrade-range" class="btn tower-btn" title="Extend your ranged units' attack range — reach deeper into the enemy line">
                         <span class="tower-label">Range &rarr; Lv 1</span>
                         <span id="range-cost" class="tower-cost">180g</span>
+                        <span id="range-stat" class="btn-stat">Reach +45 px</span>
                     </button>
                     <button id="upgrade-special" class="btn tower-btn" title="Buy your special attack, then upgrade its power (4 levels: Lv1 weak → Lv4 brutal)">
                         <span class="tower-label">Buy Special</span>
                         <span id="special-upg-cost" class="tower-cost">250g</span>
+                        <span id="special-stat" class="btn-stat">Power ×0.4</span>
                     </button>
                 </div>
             </div>
 
-            <div class="control-group action-group">
-                <h3>ERA & SPECIAL</h3>
+            <div class="control-group action-group special-group">
+                <h3>SPECIAL</h3>
                 <div class="buttons-grid">
-                    <button id="evolve-btn" class="btn evolve-btn disabled" title="Shortcut: E">
-                        <span class="btn-primary-text">EVOLVE ERA</span>
-                        <span id="evolve-cost-text" class="btn-sub-text">Need 2000 XP</span>
-                    </button>
                     <button id="special-btn" class="btn special-btn" title="Shortcut: Space">
                         <span class="btn-primary-text">SPECIAL ATTACK</span>
                         <span id="special-status-text" class="btn-sub-text">Locked</span>
