@@ -19,7 +19,7 @@
 export const firebaseConfig = {
     apiKey: "AIzaSyAYuu5XEC4HkPG6zoOEAL_xbPFuLru5BnA",
     authDomain: "era-battle.firebaseapp.com",
-    databaseURL: "https://era-battle-default-rtdb.firebaseio.com",
+    databaseURL: "https://era-battle-default-rtdb.europe-west1.firebasedatabase.app",
     projectId: "era-battle",
     storageBucket: "era-battle.firebasestorage.app",
     messagingSenderId: "546262567504",
