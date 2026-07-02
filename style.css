@@ -1470,3 +1470,542 @@ body.is-multiplayer .utility-group .buttons-grid { grid-template-rows: 1fr; }
 #controls-panel {
     height: 210px;
 }
+
+/* ==========================================================================
+   ===== MAIN MENU (title screen) =====
+   Cinematic, animated title screen for #intro-modal ONLY.
+   All selectors are scoped to #intro-modal so the other modals
+   (join / lobby / gameover) keep their original styling.
+   ========================================================================== */
+
+/* ----- Overlay: let the atmospheric background show through ----- */
+#intro-modal.modal-overlay {
+    background: #05070d;
+    backdrop-filter: none;
+    overflow: hidden;
+    padding: 20px;
+}
+
+/* ----- Atmospheric background layers (decorative, behind the card) ----- */
+.menu-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+/* Slow-drifting multi-hue aurora / nebula, evoking the sweep of ages */
+.menu-bg-aurora {
+    position: absolute;
+    inset: -25%;
+    background:
+        radial-gradient(38% 46% at 22% 30%, rgba(251, 191, 36, 0.20) 0%, transparent 62%),
+        radial-gradient(42% 50% at 78% 26%, rgba(59, 130, 246, 0.24) 0%, transparent 64%),
+        radial-gradient(46% 52% at 60% 82%, rgba(168, 85, 247, 0.22) 0%, transparent 66%),
+        radial-gradient(40% 46% at 12% 78%, rgba(239, 68, 68, 0.16) 0%, transparent 62%);
+    filter: blur(14px) saturate(1.15);
+    animation: menu-aurora 26s ease-in-out infinite alternate;
+    will-change: transform;
+}
+
+@keyframes menu-aurora {
+    0%   { transform: translate3d(-3%, -2%, 0) scale(1.05) rotate(0deg); }
+    50%  { transform: translate3d(3%, 2%, 0) scale(1.15) rotate(4deg); }
+    100% { transform: translate3d(-2%, 3%, 0) scale(1.08) rotate(-3deg); }
+}
+
+/* Faint god-rays sweeping across the top, adds cinematic depth */
+.menu-bg-rays {
+    position: absolute;
+    inset: -40% -10% auto -10%;
+    height: 120%;
+    background: repeating-conic-gradient(
+        from 0deg at 50% -10%,
+        rgba(255, 255, 255, 0.05) 0deg 3deg,
+        transparent 3deg 12deg
+    );
+    mask-image: radial-gradient(60% 70% at 50% 0%, #000 0%, transparent 72%);
+    -webkit-mask-image: radial-gradient(60% 70% at 50% 0%, #000 0%, transparent 72%);
+    opacity: 0.6;
+    animation: menu-rays 40s linear infinite;
+    transform-origin: 50% 0%;
+    will-change: transform;
+}
+
+@keyframes menu-rays {
+    from { transform: rotate(-6deg); }
+    to   { transform: rotate(6deg); }
+}
+
+/* Subtle receding tech grid at the base — hints at the "future" era */
+.menu-bg-grid {
+    position: absolute;
+    left: -20%;
+    right: -20%;
+    bottom: -10%;
+    height: 55%;
+    background-image:
+        linear-gradient(rgba(96, 165, 250, 0.10) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(96, 165, 250, 0.10) 1px, transparent 1px);
+    background-size: 48px 48px;
+    transform: perspective(340px) rotateX(62deg);
+    transform-origin: 50% 100%;
+    mask-image: linear-gradient(to top, #000 0%, transparent 88%);
+    -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 88%);
+    opacity: 0.5;
+    animation: menu-grid 10s linear infinite;
+    will-change: background-position;
+}
+
+@keyframes menu-grid {
+    from { background-position: 0 0, 0 0; }
+    to   { background-position: 0 48px, 0 48px; }
+}
+
+/* Vignette to keep the card readable */
+.menu-bg-vignette {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(120% 100% at 50% 42%, transparent 42%, rgba(3, 6, 15, 0.72) 100%),
+        linear-gradient(180deg, rgba(3, 6, 15, 0.35) 0%, transparent 30%, transparent 70%, rgba(3, 6, 15, 0.6) 100%);
+}
+
+/* Drifting embers */
+.menu-embers { position: absolute; inset: 0; }
+.menu-embers span {
+    position: absolute;
+    bottom: -12px;
+    left: var(--x);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #fde68a 0%, #f59e0b 45%, rgba(245, 158, 11, 0) 72%);
+    transform: scale(var(--s, 1));
+    opacity: 0;
+    animation: menu-ember var(--d, 12s) linear var(--delay, 0s) infinite;
+    will-change: transform, opacity;
+}
+
+@keyframes menu-ember {
+    0%   { transform: translateY(0) translateX(0) scale(var(--s, 1)); opacity: 0; }
+    10%  { opacity: 0.9; }
+    80%  { opacity: 0.7; }
+    100% { transform: translateY(-108vh) translateX(24px) scale(var(--s, 1)); opacity: 0; }
+}
+
+/* ----- The menu card itself ----- */
+#intro-modal .modal-content {
+    position: relative;
+    z-index: 1;
+    width: 600px;
+    max-width: 100%;
+    padding: 34px 38px 26px;
+    background:
+        linear-gradient(180deg, rgba(17, 24, 42, 0.92) 0%, rgba(8, 12, 24, 0.94) 100%);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 18px;
+    box-shadow:
+        0 30px 80px -20px rgba(0, 0, 0, 0.9),
+        0 0 60px -20px rgba(59, 130, 246, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    overflow: visible;
+    animation: menu-card-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes menu-card-in {
+    from { opacity: 0; transform: translateY(22px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Thin animated top border accent */
+#intro-modal .modal-content::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 12%;
+    right: 12%;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(90deg,
+        transparent, rgba(251, 191, 36, 0), var(--gold-color),
+        var(--accent-color), var(--xp-color), rgba(168, 85, 247, 0), transparent);
+    background-size: 220% 100%;
+    animation: menu-topline 6s linear infinite;
+}
+
+@keyframes menu-topline {
+    from { background-position: 200% 0; }
+    to   { background-position: -20% 0; }
+}
+
+/* Corner filigree */
+#intro-modal .modal-content::after {
+    content: "";
+    position: absolute;
+    inset: 8px;
+    border-radius: 12px;
+    pointer-events: none;
+    background:
+        linear-gradient(var(--gold-color), var(--gold-color)) left  top    / 22px 2px no-repeat,
+        linear-gradient(var(--gold-color), var(--gold-color)) left  top    / 2px 22px no-repeat,
+        linear-gradient(var(--gold-color), var(--gold-color)) right top    / 22px 2px no-repeat,
+        linear-gradient(var(--gold-color), var(--gold-color)) right top    / 2px 22px no-repeat,
+        linear-gradient(var(--gold-color), var(--gold-color)) left  bottom / 22px 2px no-repeat,
+        linear-gradient(var(--gold-color), var(--gold-color)) left  bottom / 2px 22px no-repeat,
+        linear-gradient(var(--gold-color), var(--gold-color)) right bottom / 22px 2px no-repeat,
+        linear-gradient(var(--gold-color), var(--gold-color)) right bottom / 2px 22px no-repeat;
+    opacity: 0.5;
+}
+
+/* ----- Logo ----- */
+.menu-logo {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.menu-eras {
+    display: flex;
+    gap: 14px;
+    font-size: 17px;
+    margin-bottom: 6px;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+}
+.menu-eras span {
+    opacity: 0.85;
+    animation: menu-era-bob 4s ease-in-out infinite;
+}
+.menu-eras span:nth-child(2) { animation-delay: 0.4s; }
+.menu-eras span:nth-child(3) { animation-delay: 0.8s; }
+.menu-eras span:nth-child(4) { animation-delay: 1.2s; }
+.menu-eras span:nth-child(5) { animation-delay: 1.6s; }
+
+@keyframes menu-era-bob {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-3px); }
+}
+
+.menu-crest {
+    filter: drop-shadow(0 0 10px rgba(251, 191, 36, 0.45));
+    animation: menu-crest-float 5s ease-in-out infinite;
+    margin-bottom: -6px;
+}
+
+@keyframes menu-crest-float {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50%      { transform: translateY(-4px) rotate(-1.5deg); }
+}
+
+/* Big cinematic title with metallic gradient + animated sheen sweep */
+#intro-modal .modal-content h1 {
+    position: relative;
+    font-size: 66px;
+    font-weight: 800;
+    line-height: 0.98;
+    letter-spacing: 0.08em;
+    margin: 6px 0 2px;
+    background: linear-gradient(180deg,
+        #fff7e6 0%, #fde68a 32%, #f59e0b 58%, #b45309 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    text-shadow: none;
+    filter:
+        drop-shadow(0 2px 0 rgba(120, 53, 15, 0.55))
+        drop-shadow(0 0 24px rgba(251, 191, 36, 0.35));
+    animation: menu-title-pulse 4s ease-in-out infinite;
+}
+
+@keyframes menu-title-pulse {
+    0%, 100% { filter: drop-shadow(0 2px 0 rgba(120, 53, 15, 0.55)) drop-shadow(0 0 20px rgba(251, 191, 36, 0.28)); }
+    50%      { filter: drop-shadow(0 2px 0 rgba(120, 53, 15, 0.55)) drop-shadow(0 0 34px rgba(251, 191, 36, 0.5)); }
+}
+
+/* Sheen sweep across the metallic letters */
+#intro-modal .modal-content h1::after {
+    content: attr(data-text);
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg,
+        transparent 38%, rgba(255, 255, 255, 0.85) 50%, transparent 62%);
+    background-size: 260% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    animation: menu-title-sheen 5.5s ease-in-out infinite;
+}
+
+@keyframes menu-title-sheen {
+    0%, 55%  { background-position: 220% 0; }
+    100%     { background-position: -60% 0; }
+}
+
+.menu-underline {
+    width: 62%;
+    height: 2px;
+    margin-top: 8px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent, var(--gold-color), var(--accent-color), transparent);
+    background-size: 200% 100%;
+    box-shadow: 0 0 12px rgba(251, 191, 36, 0.4);
+    animation: menu-underline-sweep 5s linear infinite;
+}
+
+@keyframes menu-underline-sweep {
+    from { background-position: 0 0; }
+    to   { background-position: 200% 0; }
+}
+
+#intro-modal .subtitle {
+    color: #cbd5e1;
+    font-size: 12.5px;
+    letter-spacing: 0.14em;
+    margin: 12px 0 26px;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+}
+
+/* ----- Menu buttons as premium entries ----- */
+#intro-modal .menu-buttons {
+    gap: 13px;
+    margin-bottom: 14px;
+}
+
+#intro-modal .menu-btn-big {
+    position: relative;
+    display: grid;
+    grid-template-columns: 52px 1fr auto;
+    align-items: center;
+    gap: 15px;
+    text-align: left;
+    width: 100%;
+    padding: 15px 20px;
+    border-radius: 13px;
+    border: 1px solid rgba(148, 163, 184, 0.20);
+    background: linear-gradient(180deg, rgba(30, 41, 59, 0.85) 0%, rgba(11, 18, 32, 0.9) 100%);
+    color: var(--text-color);
+    cursor: pointer;
+    overflow: hidden;
+    isolation: isolate;
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+                border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+    animation: menu-btn-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+#intro-modal .menu-btn-big:nth-child(1) { animation-delay: 0.12s; }
+#intro-modal .menu-btn-big:nth-child(2) { animation-delay: 0.20s; }
+#intro-modal .menu-btn-big:nth-child(3) { animation-delay: 0.28s; }
+
+@keyframes menu-btn-in {
+    from { opacity: 0; transform: translateX(-14px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Left accent bar */
+#intro-modal .menu-btn-big .mb-accent {
+    position: absolute;
+    left: 0;
+    top: 10%;
+    bottom: 10%;
+    width: 4px;
+    border-radius: 0 4px 4px 0;
+    background: var(--gold-color);
+    box-shadow: 0 0 12px var(--gold-color);
+    transition: top 0.2s ease, bottom 0.2s ease, opacity 0.2s ease;
+    opacity: 0.85;
+}
+
+#intro-modal .menu-btn-big.online .mb-accent {
+    background: var(--accent-color);
+    box-shadow: 0 0 12px var(--accent-color);
+}
+#intro-modal #btn-join .mb-accent {
+    background: var(--xp-color);
+    box-shadow: 0 0 12px var(--xp-color);
+}
+
+/* Icon medallion */
+#intro-modal .menu-btn-big .mb-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 11px;
+    color: var(--gold-color);
+    background: radial-gradient(circle at 50% 35%, rgba(251, 191, 36, 0.22), rgba(251, 191, 36, 0.05));
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    box-shadow: inset 0 0 12px rgba(251, 191, 36, 0.15);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease;
+}
+
+#intro-modal .menu-btn-big.online .mb-icon {
+    color: #93c5fd;
+    background: radial-gradient(circle at 50% 35%, rgba(59, 130, 246, 0.24), rgba(59, 130, 246, 0.05));
+    border-color: rgba(59, 130, 246, 0.32);
+    box-shadow: inset 0 0 12px rgba(59, 130, 246, 0.16);
+}
+#intro-modal #btn-join .mb-icon {
+    color: #c4b5fd;
+    background: radial-gradient(circle at 50% 35%, rgba(168, 85, 247, 0.24), rgba(168, 85, 247, 0.05));
+    border-color: rgba(168, 85, 247, 0.32);
+    box-shadow: inset 0 0 12px rgba(168, 85, 247, 0.16);
+}
+
+#intro-modal .menu-btn-big .mb-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+#intro-modal .menu-btn-big .mb-title {
+    font-size: 16.5px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    color: var(--text-color);
+}
+
+#intro-modal .menu-btn-big .mb-sub {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.01em;
+}
+
+/* Chevron affordance */
+#intro-modal .menu-btn-big .mb-chevron {
+    font-size: 26px;
+    font-weight: 800;
+    line-height: 1;
+    color: var(--text-muted);
+    opacity: 0.55;
+    transform: translateX(-2px);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease, color 0.2s ease;
+}
+
+/* Sheen sweep on hover */
+#intro-modal .menu-btn-big .mb-sheen {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.12) 50%, transparent 60%);
+    background-size: 250% 100%;
+    background-position: 200% 0;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+/* --- Hover / focus states --- */
+#intro-modal .menu-btn-big:hover,
+#intro-modal .menu-btn-big:focus-visible {
+    transform: translateY(-3px) scale(1.012);
+    outline: none;
+}
+
+#intro-modal #btn-solo:hover,
+#intro-modal #btn-solo:focus-visible {
+    border-color: rgba(251, 191, 36, 0.6);
+    background: linear-gradient(180deg, rgba(58, 46, 20, 0.9) 0%, rgba(20, 15, 8, 0.92) 100%);
+    box-shadow: 0 12px 30px -8px rgba(251, 191, 36, 0.35), 0 0 0 1px rgba(251, 191, 36, 0.25);
+}
+#intro-modal .menu-btn-big.online:hover,
+#intro-modal .menu-btn-big.online:focus-visible {
+    border-color: rgba(59, 130, 246, 0.6);
+    box-shadow: 0 12px 30px -8px rgba(59, 130, 246, 0.35), 0 0 0 1px rgba(59, 130, 246, 0.25);
+}
+#intro-modal #btn-join:hover,
+#intro-modal #btn-join:focus-visible {
+    border-color: rgba(168, 85, 247, 0.6);
+    box-shadow: 0 12px 30px -8px rgba(168, 85, 247, 0.35), 0 0 0 1px rgba(168, 85, 247, 0.25);
+}
+
+#intro-modal .menu-btn-big:hover .mb-icon,
+#intro-modal .menu-btn-big:focus-visible .mb-icon {
+    transform: scale(1.08) rotate(-3deg);
+}
+#intro-modal .menu-btn-big:hover .mb-chevron,
+#intro-modal .menu-btn-big:focus-visible .mb-chevron {
+    transform: translateX(4px);
+    opacity: 1;
+    color: var(--text-color);
+}
+#intro-modal .menu-btn-big:hover .mb-accent,
+#intro-modal .menu-btn-big:focus-visible .mb-accent {
+    top: 0; bottom: 0; opacity: 1;
+}
+#intro-modal .menu-btn-big:hover .mb-sheen {
+    opacity: 1;
+    animation: menu-btn-sheen 0.9s ease;
+}
+
+@keyframes menu-btn-sheen {
+    from { background-position: 200% 0; }
+    to   { background-position: -80% 0; }
+}
+
+#intro-modal .menu-btn-big:active {
+    transform: translateY(-1px) scale(0.998);
+}
+
+/* ----- "How to Play" secondary link + panel ----- */
+#intro-modal .howto-toggle {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+#intro-modal .howto-toggle:hover {
+    color: var(--text-color);
+    border-color: rgba(148, 163, 184, 0.25);
+    background: rgba(148, 163, 184, 0.06);
+}
+
+#intro-modal .howto-body {
+    background: rgba(3, 7, 18, 0.6);
+    border: 1px solid rgba(148, 163, 184, 0.15);
+    border-radius: 12px;
+    margin-top: 12px;
+    margin-bottom: 4px;
+    animation: menu-card-in 0.35s ease both;
+}
+
+/* ----- Reduced-motion: mute the big animations ----- */
+@media (prefers-reduced-motion: reduce) {
+    #intro-modal .menu-bg-aurora,
+    #intro-modal .menu-bg-rays,
+    #intro-modal .menu-bg-grid,
+    #intro-modal .menu-embers span,
+    #intro-modal .menu-eras span,
+    #intro-modal .menu-crest,
+    #intro-modal .modal-content,
+    #intro-modal .modal-content::before,
+    #intro-modal .modal-content h1,
+    #intro-modal .modal-content h1::after,
+    #intro-modal .menu-underline,
+    #intro-modal .menu-btn-big,
+    #intro-modal .howto-body {
+        animation: none !important;
+    }
+    #intro-modal .menu-embers { display: none; }
+}
+
+/* ----- Small / short screens: keep it tidy ----- */
+@media (max-width: 900px), (max-height: 620px) {
+    #intro-modal .modal-content { padding: 24px 22px 20px; }
+    #intro-modal .modal-content h1 { font-size: 46px; }
+    #intro-modal .menu-crest svg { width: 56px; height: 56px; }
+    #intro-modal .menu-btn-big { grid-template-columns: 44px 1fr auto; padding: 12px 16px; gap: 12px; }
+    #intro-modal .menu-btn-big .mb-icon { width: 40px; height: 40px; }
+    #intro-modal .menu-btn-big .mb-title { font-size: 15px; }
+}

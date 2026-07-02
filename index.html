@@ -198,22 +198,115 @@
 
     <!-- Main Menu / Mode select -->
     <div id="intro-modal" class="modal-overlay">
+        <!-- ===== Cinematic atmospheric background (decorative only) ===== -->
+        <div class="menu-bg" aria-hidden="true">
+            <div class="menu-bg-aurora"></div>
+            <div class="menu-bg-rays"></div>
+            <div class="menu-bg-grid"></div>
+            <div class="menu-bg-vignette"></div>
+            <div class="menu-embers">
+                <span style="--x:6%;  --d:11s; --delay:0s;   --s:.7"></span>
+                <span style="--x:14%; --d:14s; --delay:3s;   --s:1.1"></span>
+                <span style="--x:22%; --d:9s;  --delay:1.5s; --s:.6"></span>
+                <span style="--x:31%; --d:16s; --delay:6s;   --s:1.3"></span>
+                <span style="--x:40%; --d:12s; --delay:2s;   --s:.8"></span>
+                <span style="--x:48%; --d:15s; --delay:8s;   --s:1"></span>
+                <span style="--x:57%; --d:10s; --delay:4s;   --s:.7"></span>
+                <span style="--x:65%; --d:17s; --delay:1s;   --s:1.2"></span>
+                <span style="--x:73%; --d:13s; --delay:5.5s; --s:.9"></span>
+                <span style="--x:81%; --d:9.5s;--delay:2.5s; --s:.6"></span>
+                <span style="--x:89%; --d:15s; --delay:7s;   --s:1.1"></span>
+                <span style="--x:95%; --d:12s; --delay:3.5s; --s:.8"></span>
+            </div>
+        </div>
+
         <div class="modal-content">
-            <h1>ERA BATTLE</h1>
+            <!-- ===== Cinematic logo ===== -->
+            <div class="menu-logo">
+                <div class="menu-eras" aria-hidden="true">
+                    <span title="Stone Age">🪨</span>
+                    <span title="Ancient">🏛️</span>
+                    <span title="Medieval">🏰</span>
+                    <span title="Modern">🏭</span>
+                    <span title="Future">🚀</span>
+                </div>
+                <div class="menu-crest" aria-hidden="true">
+                    <svg viewBox="0 0 120 120" width="72" height="72">
+                        <defs>
+                            <linearGradient id="crestG" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0" stop-color="#fde68a"/>
+                                <stop offset="1" stop-color="#f59e0b"/>
+                            </linearGradient>
+                        </defs>
+                        <g stroke="url(#crestG)" stroke-width="6" stroke-linecap="round" fill="none">
+                            <!-- crossed swords -->
+                            <line x1="26" y1="94" x2="86" y2="30"/>
+                            <line x1="94" y1="94" x2="34" y2="30"/>
+                            <path d="M86 30 l8-8 4 4 -8 8z" fill="url(#crestG)" stroke="none"/>
+                            <path d="M34 30 l-8-8 -4 4 8 8z" fill="url(#crestG)" stroke="none"/>
+                            <line x1="20" y1="88" x2="32" y2="100"/>
+                            <line x1="100" y1="88" x2="88" y2="100"/>
+                        </g>
+                    </svg>
+                </div>
+                <h1 data-text="ERA BATTLE">ERA BATTLE</h1>
+                <div class="menu-underline" aria-hidden="true"></div>
+            </div>
             <p class="subtitle">Evolve through the ages &amp; crush the enemy stronghold</p>
 
             <div class="menu-buttons">
                 <button id="btn-solo" class="menu-btn-big">
-                    <span class="mb-title">SINGLE PLAYER</span>
-                    <span class="mb-sub">Battle the AI through 5 eras</span>
+                    <span class="mb-accent" aria-hidden="true"></span>
+                    <span class="mb-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14.5 17.5 3 6V3h3l11.5 11.5"/>
+                            <path d="M13 19l6-6"/>
+                            <path d="M16 16l4 4"/>
+                            <path d="M19 21l2-2"/>
+                            <path d="M9.5 17.5 21 6V3h-3L6.5 14.5"/>
+                            <path d="M11 19l-6-6"/>
+                            <path d="M8 16l-4 4"/>
+                            <path d="M5 21l-2-2"/>
+                        </svg>
+                    </span>
+                    <span class="mb-text">
+                        <span class="mb-title">SINGLE PLAYER</span>
+                        <span class="mb-sub">Battle the AI through 5 eras</span>
+                    </span>
+                    <span class="mb-chevron" aria-hidden="true">›</span>
+                    <span class="mb-sheen" aria-hidden="true"></span>
                 </button>
                 <button id="btn-create" class="menu-btn-big online">
-                    <span class="mb-title">CREATE ONLINE MATCH</span>
-                    <span class="mb-sub">Get a code &amp; invite a friend</span>
+                    <span class="mb-accent" aria-hidden="true"></span>
+                    <span class="mb-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="9"/>
+                            <path d="M3 12h18"/>
+                            <path d="M12 3a14 14 0 0 1 0 18"/>
+                            <path d="M12 3a14 14 0 0 0 0 18"/>
+                        </svg>
+                    </span>
+                    <span class="mb-text">
+                        <span class="mb-title">CREATE ONLINE MATCH</span>
+                        <span class="mb-sub">Get a code &amp; invite a friend</span>
+                    </span>
+                    <span class="mb-chevron" aria-hidden="true">›</span>
+                    <span class="mb-sheen" aria-hidden="true"></span>
                 </button>
                 <button id="btn-join" class="menu-btn-big online">
-                    <span class="mb-title">JOIN ONLINE MATCH</span>
-                    <span class="mb-sub">Enter a friend's code</span>
+                    <span class="mb-accent" aria-hidden="true"></span>
+                    <span class="mb-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5"/>
+                            <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5"/>
+                        </svg>
+                    </span>
+                    <span class="mb-text">
+                        <span class="mb-title">JOIN ONLINE MATCH</span>
+                        <span class="mb-sub">Enter a friend's code</span>
+                    </span>
+                    <span class="mb-chevron" aria-hidden="true">›</span>
+                    <span class="mb-sheen" aria-hidden="true"></span>
                 </button>
             </div>
 

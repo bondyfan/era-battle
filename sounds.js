@@ -76,4 +76,65 @@
         toggleMuted() { muted = !muted; return muted; },
         isMuted() { return muted; }
     };
+
+    // ======================================================================
+    // Background MUSIC (menu + per-level themes) with crossfade.
+    // ======================================================================
+    const TRACKS = {
+        mainmenu: 'music/mainmenu.mp3',
+        level1: 'music/level1.mp3',
+        level3: 'music/level3.mp3',
+    };
+    let curAudio = null, curName = null, musVol = 0.42, musMuted = false;
+
+    function musicPlay(name, opts) {
+        opts = opts || {};
+        const url = TRACKS[name];
+        if (!url) return;
+        if (curName === name && curAudio && !curAudio.paused) return; // already playing
+        curName = name;
+        const next = new Audio(url);
+        next.loop = opts.loop !== false;
+        next.volume = 0;
+        const target = musMuted ? 0 : musVol;
+        const pr = next.play();
+        if (pr && pr.catch) pr.catch(() => {}); // may be blocked until a user gesture
+        const old = curAudio;
+        curAudio = next;
+        const fade = opts.fade != null ? opts.fade : 900;
+        const steps = 24;
+        let i = 0;
+        const iv = setInterval(() => {
+            i++;
+            const t = i / steps;
+            if (!next.paused) next.volume = target * t;
+            if (old) old.volume = Math.max(0, old.volume * (1 - t));
+            if (i >= steps) { clearInterval(iv); if (old) { try { old.pause(); } catch (e) {} } }
+        }, fade / steps);
+    }
+    function musicStop(fade) {
+        const old = curAudio; curAudio = null; curName = null;
+        if (!old) return;
+        const steps = 16; let i = 0;
+        const iv = setInterval(() => {
+            i++; old.volume = Math.max(0, old.volume * (1 - i / steps));
+            if (i >= steps) { clearInterval(iv); try { old.pause(); } catch (e) {} }
+        }, (fade || 600) / steps);
+    }
+    // If autoplay was blocked, resume the requested track on the first gesture.
+    window.addEventListener('pointerdown', () => {
+        if (curName && curAudio && curAudio.paused) {
+            const p = curAudio.play(); if (p && p.catch) p.catch(() => {});
+            if (!musMuted) curAudio.volume = musVol;
+        }
+    }, { passive: true });
+
+    window.Music = {
+        play: musicPlay,
+        stop: musicStop,
+        setVolume(v) { musVol = Math.max(0, Math.min(1, v)); if (curAudio && !musMuted) curAudio.volume = musVol; },
+        setMuted(m) { musMuted = !!m; if (curAudio) curAudio.volume = musMuted ? 0 : musVol; },
+        toggleMuted() { musMuted = !musMuted; if (curAudio) curAudio.volume = musMuted ? 0 : musVol; return musMuted; },
+        current() { return curName; },
+    };
 })();

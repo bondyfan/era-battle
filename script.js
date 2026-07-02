@@ -7,9 +7,9 @@
 import {
     MAP_SIZE, VIRTUAL_WIDTH, VIRTUAL_HEIGHT, GROUND_Y, BASE_HP_MAX,
     PLAYER_CORNER, ENEMY_CORNER, PLAYER_BASE_X, ENEMY_BASE_X,
-    BASE_REACH, TOWER_MIN_SPACING, LANE_UNLOCK_COST,
+    BASE_REACH, TOWER_MIN_SPACING, TOWER_LANE_CLEARANCE, LANE_UNLOCK_COST,
     LANE_BY_IDX, LANE_IDX,
-    laneLength, posAt, headingAt,
+    laneLength, posAt, headingAt, distToLane,
     S, mirrorX, mirrorZ, mirrorLane
 } from './world.js';
 
@@ -325,6 +325,7 @@ const ERA_DATA = [
 // Spatial constants (VIRTUAL_WIDTH/GROUND_Y/PLAYER_BASE_X/ENEMY_BASE_X/BASE_HP_MAX/...)
 // are imported from world.js so the sim and the 3D renderer never disagree.
 const SPECIAL_COOLDOWN_MS = 40000; // 40 seconds
+const SPECIAL_RADIUS = 520;        // sim units — placement radius for the targeted special
 const TOWER_SLOT_COSTS = [150, 400, 1000];
 const TOWER_BUILD_COST = 250;
 
@@ -344,6 +345,33 @@ const RANGED_TYPES = ['ranged', 'hitscan', 'laser', 'laser_heavy'];
 // Each of the 3 unit slots advances through the 5 eras independently, for gold.
 const UNIT_EVOLVE_MULT = 2.5;   // evolve cost = next-tier unit's spawn cost * this
 const UNIT3_UNLOCK_COST = 50;   // the heavy unit (slot 3) must be unlocked first
+
+// ---- Lane helpers for the targeted special (world point -> nearest lane / arc-length) ----
+// Which lane path passes closest to a world (x,z) point.
+function nearestLaneTo(x, z) {
+    let best = 'mid', bestD = Infinity;
+    for (const name of LANE_BY_IDX) {
+        const len = laneLength(name);
+        for (let i = 0; i <= 40; i++) {
+            const p = posAt(name, (len * i) / 40);
+            const d = Math.hypot(p.x - x, p.z - z);
+            if (d < bestD) { bestD = d; best = name; }
+        }
+    }
+    return best;
+}
+// Approximate arc-length along `lane` of the point on the lane nearest to (x,z).
+function distAlongLane(lane, x, z) {
+    const len = laneLength(lane);
+    let bestD = Infinity, bestT = 0;
+    for (let i = 0; i <= 80; i++) {
+        const d = (len * i) / 80;
+        const p = posAt(lane, d);
+        const dd = Math.hypot(p.x - x, p.z - z);
+        if (dd < bestD) { bestD = dd; bestT = d; }
+    }
+    return bestT;
+}
 
 // ==========================================================================
 // PARTICLE SYSTEM
@@ -491,7 +519,7 @@ class Tower {
         ));
 
         const flashColor = this.team === 'player' ? '#60a5fa' : '#f87171';
-        game.particles.push(new Particle(this.x, towerY, flashColor, 'spark', '', 4));
+        game.particles.push(new Particle(this.x, towerY, flashColor, 'spark', '', 4, this.z));
     }
 
     draw(ctx, cameraX, game) {
@@ -902,8 +930,8 @@ class Projectile {
             if (this.target.type === 'shielded_melee' &&
                 (this.type === 'arrow' || this.type === 'bolt' || this.type === 'pebble' || this.type === 'bullet')) {
                 actualDmg = Math.round(this.damage * 0.4); // 60% mitigation!
-                // Spark indicator of shield hit
-                game.particles.push(new Particle(this.x, this.y, '#e2e8f0', 'spark', '', 5));
+                // Spark indicator of shield hit (world z so it lands on the target's lane)
+                game.particles.push(new Particle(this.x, this.y, '#e2e8f0', 'spark', '', 5, this.z));
             }
             this.target.takeDamage(actualDmg, game);
         } else if (this.maxHeight > 0 && (this.type === 'firepot' || this.type === 'grenade')) {
@@ -912,27 +940,28 @@ class Projectile {
             this.applySplash(game);
         }
 
-        // Spawn Particles based on projectile type
+        // Spawn Particles based on projectile type — all carry the projectile's world z
+        // so the 3D FX bridge places the impact on the correct lane.
         if (this.type === 'firepot') {
             for (let i = 0; i < 15; i++) {
-                game.particles.push(new Particle(this.x, this.y, '#f59e0b', 'fire'));
-                game.particles.push(new Particle(this.x, this.y, '#4b5563', 'smoke'));
+                game.particles.push(new Particle(this.x, this.y, '#f59e0b', 'fire', '', null, this.z));
+                game.particles.push(new Particle(this.x, this.y, '#4b5563', 'smoke', '', null, this.z));
             }
         } else if (this.type === 'grenade' || this.type === 'shell') {
             for (let i = 0; i < 12; i++) {
-                game.particles.push(new Particle(this.x, this.y, '#ef4444', 'fire'));
-                game.particles.push(new Particle(this.x, this.y, '#71717a', 'smoke'));
+                game.particles.push(new Particle(this.x, this.y, '#ef4444', 'fire', '', null, this.z));
+                game.particles.push(new Particle(this.x, this.y, '#71717a', 'smoke', '', null, this.z));
             }
         } else if (this.type === 'plasma') {
             for (let i = 0; i < 8; i++) {
-                game.particles.push(new Particle(this.x, this.y, '#38bdf8', 'spark'));
+                game.particles.push(new Particle(this.x, this.y, '#38bdf8', 'spark', '', null, this.z));
             }
         } else {
             // Standard small spark / blood splat
             const hitColor = (this.target && this.target.hp > 0 && this.target.height) ? '#ef4444' : '#f59e0b';
             const particleType = hitColor === '#ef4444' ? 'blood' : 'spark';
             for (let i = 0; i < 5; i++) {
-                game.particles.push(new Particle(this.x, this.y, hitColor, particleType));
+                game.particles.push(new Particle(this.x, this.y, hitColor, particleType, '', null, this.z));
             }
         }
     }
@@ -1074,21 +1103,23 @@ class Unit {
         if (this.state === 'die') return;
         this.hp = Math.max(0, this.hp - amount);
         
-        // Blood splat particle
+        // Blood splat particle — carry the unit's world z so the 3D FX lands on the right lane
         game.particles.push(new Particle(
             this.x + (Math.random() - 0.5) * 10,
             this.y - this.height / 2 + (Math.random() - 0.5) * 10,
             '#dc2626',
-            'blood'
+            'blood',
+            '', null, this.z
         ));
-        
-        // Damage floating indicator
+
+        // Damage floating indicator (world z so the "-N" floats over the hit unit)
         game.particles.push(new Particle(
             this.x,
             this.y - this.height - 5,
             '#ef4444',
             'text',
-            `-${amount}`
+            `-${amount}`,
+            null, this.z
         ));
 
         if (this.hp <= 0) {
@@ -1253,10 +1284,9 @@ class Unit {
             if (this.type === 'melee' || this.type === 'heavy_melee' || this.type === 'shielded_melee') {
                 // Immediate damage to target
                 this.target.takeDamage(this.damage, game);
-                
-                // Strike impact splash particle
-                const strikeX = this.x + (this.width / 2) * this.facing;
-                game.particles.push(new Particle(strikeX, this.y - this.height / 2, '#fbbf24', 'spark', '', 3));
+
+                // Strike impact splash particle (on the unit center, with world z)
+                game.particles.push(new Particle(this.x, this.y - this.height / 2, '#fbbf24', 'spark', '', 3, this.z));
             } 
             else if (this.type === 'ranged') {
                 // Spawn projectile
@@ -1274,16 +1304,16 @@ class Unit {
             }
             else if (this.type === 'hitscan') {
                 // Instant bullet fire visual
-                const muzzleX = this.x + (this.width / 2) * this.facing;
                 const muzzleY = this.y - this.height * 0.75;
                 const targetY = this.target.y - (this.target.height ? this.target.height / 2 : 50);
-                
-                game.particles.push(new Particle(muzzleX, muzzleY, '#fbbf24', 'spark', '', 5)); // flash
-                
-                // Draw a quick bullet line in particles (custom light beam)
-                game.particles.push(new Particle(this.target.x, targetY, '#ef4444', 'spark', '', 3));
+
+                // Muzzle flash on the shooter (world z = this.z)
+                game.particles.push(new Particle(this.x, muzzleY, '#fbbf24', 'spark', '', 5, this.z)); // flash
+
+                // Hit spark on the target — carry the target's world z so it lands on its lane
+                game.particles.push(new Particle(this.target.x, targetY, '#ef4444', 'spark', '', 3, this.target.z ?? this.z));
                 this.target.takeDamage(this.damage, game);
-            } 
+            }
             else if (this.type === 'laser') {
                 // Neon blue laser projectile
                 const projX = this.x + (this.width / 2) * this.facing;
@@ -1901,7 +1931,7 @@ class Unit {
 // ==========================================================================
 
 class SpecialAttack {
-    constructor(type, team, dmgMult = 1) {
+    constructor(type, team, dmgMult = 1, targetX = null, targetZ = null) {
         this.type = type; // 'meteor', 'arrows', 'fireball', 'airstrike', 'orbitallaser'
         this.team = team;
         this.dmgMult = dmgMult; // scales all damage by the purchased special level
@@ -1909,40 +1939,58 @@ class SpecialAttack {
         this.duration = type === 'orbitallaser' ? 3000 : (type === 'airstrike' ? 2500 : 2000);
         this.isDead = false;
 
-        // Scatter world (x,z) points around the OPPONENT's corner region.
+        // Placement center: where the player (or AI) aimed the special. Default to the
+        // opponent's corner region if no target was supplied.
         this.opp = team === 'player' ? ENEMY_CORNER : PLAYER_CORNER;
+        const clampMap = (v) => Math.max(60, Math.min(MAP_SIZE - 60, v));
+        const tx = clampMap(Number.isFinite(targetX) ? targetX : this.opp.x);
+        const tz = clampMap(Number.isFinite(targetZ) ? targetZ : this.opp.z);
+        this.targetX = tx;
+        this.targetZ = tz;
+
         this.projectilesToSpawn = [];
-        const SPREAD = 450;
-        const clamp = (v) => Math.max(60, Math.min(MAP_SIZE - 60, v));
-        const rx = () => clamp(this.opp.x + (Math.random() - 0.5) * 2 * SPREAD);
-        const rz = () => clamp(this.opp.z + (Math.random() - 0.5) * 2 * SPREAD);
+        // Scatter world (x,z) points within SPECIAL_RADIUS of the target center.
+        const scatter = () => {
+            const ang = Math.random() * Math.PI * 2;
+            const rad = Math.sqrt(Math.random()) * SPECIAL_RADIUS; // uniform disc
+            return {
+                x: clampMap(tx + Math.cos(ang) * rad),
+                z: clampMap(tz + Math.sin(ang) * rad),
+            };
+        };
 
         if (type === 'meteor') {
-            for (let i = 0; i < 15; i++) this.projectilesToSpawn.push({ delay: i * 120, x: rx(), z: rz(), spawned: false });
+            for (let i = 0; i < 15; i++) { const p = scatter(); this.projectilesToSpawn.push({ delay: i * 120, x: p.x, z: p.z, spawned: false }); }
         } else if (type === 'arrows') {
-            for (let i = 0; i < 50; i++) this.projectilesToSpawn.push({ delay: i * 35, x: rx(), z: rz(), spawned: false });
+            for (let i = 0; i < 50; i++) { const p = scatter(); this.projectilesToSpawn.push({ delay: i * 35, x: p.x, z: p.z, spawned: false }); }
         } else if (type === 'fireball') {
-            for (let i = 0; i < 8; i++) this.projectilesToSpawn.push({ delay: i * 220, x: rx(), z: rz(), spawned: false });
+            for (let i = 0; i < 8; i++) { const p = scatter(); this.projectilesToSpawn.push({ delay: i * 220, x: p.x, z: p.z, spawned: false }); }
         } else if (type === 'airstrike') {
-            // Carpet-bomb along a random lane, sweeping from the enemy corner backward.
-            const lanes = ['mid', 'top', 'bottom'];
-            this.airLane = lanes[Math.floor(Math.random() * lanes.length)];
+            // Carpet-bomb along the lane nearest the target, running the run THROUGH (tx,tz).
+            this.airLane = nearestLaneTo(tx, tz);
             const len = laneLength(this.airLane);
+            const center = distAlongLane(this.airLane, tx, tz);
             for (let i = 0; i < 8; i++) {
-                // Sample points near the opponent's end of the chosen lane
-                const d = (team === 'player') ? (len - 120 - i * 130) : (120 + i * 130);
+                // Sample points striding through the target center along the lane
+                const d = center + (i - 4) * (SPECIAL_RADIUS / 4);
                 const p = posAt(this.airLane, Math.max(0, Math.min(len, d)));
                 this.projectilesToSpawn.push({ delay: 500 + i * 200, x: p.x, z: p.z, spawned: false });
             }
-            // Plane flies in along the lane toward the opponent's corner.
-            const start = posAt(this.airLane, team === 'player' ? len * 0.35 : len * 0.65);
+            // Plane flies in along the lane, approaching the target from behind.
+            this.airFrom = Math.max(0, Math.min(len, center - SPECIAL_RADIUS));
+            this.airTo = Math.max(0, Math.min(len, center + SPECIAL_RADIUS));
+            const start = posAt(this.airLane, this.airFrom);
             this.airT = 0;
             this.x = start.x; this.z = start.z;
         } else if (type === 'orbitallaser') {
-            // Beam parked near the opponent corner, sweeping across a small region.
-            this.laserX = this.opp.x;
-            this.laserZ = this.opp.z - 300;
+            // Beam parked at the target, sweeping across the placement radius (in z).
+            this.laserX = tx;
+            this.laserZ = tz - SPECIAL_RADIUS * 0.6;
+            this.laserZEnd = tz + SPECIAL_RADIUS * 0.6;
+            this.laserSpan = this.laserZEnd - this.laserZ; // total z travel over the duration
             this.x = this.laserX; this.z = this.laserZ;
+        } else {
+            this.x = tx; this.z = tz;
         }
     }
 
@@ -1964,19 +2012,18 @@ class SpecialAttack {
         }
 
         if (this.type === 'airstrike') {
-            // Sweep the plane along the chosen lane toward the opponent's corner.
+            // Sweep the plane along the chosen lane, running through the target center.
             const len = laneLength(this.airLane);
             this.airT = Math.min(1, this.airT + (dt / this.duration));
-            const from = this.team === 'player' ? 0.35 : 0.65;
-            const to = this.team === 'player' ? 0.95 : 0.05;
-            const d = (from + (to - from) * this.airT) * len;
+            const d = this.airFrom + (this.airTo - this.airFrom) * this.airT;
             const p = posAt(this.airLane, Math.max(0, Math.min(len, d)));
             this.x = p.x; this.z = p.z;
         }
         else if (this.type === 'orbitallaser') {
-            // Sweep the beam across a region around the opponent corner (in z).
-            const sweep = (600 / (this.duration / 1000)) * (dt / 1000);
-            this.laserZ += sweep;
+            // Sweep the beam across the placement radius around the target (in z),
+            // covering the full span once over the special's duration.
+            const sweep = (this.laserSpan / this.duration) * dt;
+            this.laserZ = Math.min(this.laserZEnd, this.laserZ + sweep);
             this.z = this.laserZ; this.x = this.laserX;
 
             const laserRadius = 75;
@@ -2131,6 +2178,9 @@ class Game {
         this.lastTime = 0;
         this.gameState = 'menu';
         this.updateButtonsUI();
+
+        // Main-menu soundtrack while sitting on the intro screen.
+        if (window.Music) window.Music.play('mainmenu');
     }
 
     // ----------------------------------------------------------------------
@@ -2322,6 +2372,15 @@ class Game {
     recomputeEras() {
         this.playerEra = Math.max(this.playerUnitTier[0], this.playerUnitTier[1], this.playerUnitTier[2]);
         this.enemyEra = Math.max(this.enemyUnitTier[0], this.enemyUnitTier[1], this.enemyUnitTier[2]);
+        // The battle soundtrack tracks the player's current era.
+        if (this.gameState === 'running' && this.mode !== 'guest') this.updateMusic();
+    }
+
+    // Pick and play the level track for the player's current era.
+    updateMusic() {
+        const trackByEra = { 0: 'level1', 1: 'mainmenu', 2: 'level3', 3: 'level3', 4: 'level3' };
+        const track = trackByEra[this.playerEra] || 'level1';
+        if (window.Music) window.Music.play(track);
     }
 
     unitEvolveCost(slot, tier) {
@@ -2446,19 +2505,35 @@ class Game {
         return lvl * RANGE_BONUS_PER_LEVEL;
     }
 
-    triggerSpecial(team) {
+    // Fire the special onto a placed target center (tx, tz). If no target is given,
+    // aim at the opponent's biggest unit cluster (AI) or fall back to their corner.
+    triggerSpecial(team, tx, tz) {
         const level = team === 'player' ? this.specialLevel : this.enemySpecialLevel;
         if (level < 1) return; // must be purchased first
         const timer = team === 'player' ? this.specialTimer : this.enemySpecialTimer;
         if (timer > 0) return;
+
+        const opp = team === 'player' ? ENEMY_CORNER : PLAYER_CORNER;
+        if (!Number.isFinite(tx) || !Number.isFinite(tz)) {
+            // Default target = the average position of the opponent's units, else their corner.
+            const foes = team === 'player' ? this.enemyUnits : this.playerUnits;
+            const live = foes.filter(u => u.state !== 'die');
+            if (live.length) {
+                tx = live.reduce((s, u) => s + u.x, 0) / live.length;
+                tz = live.reduce((s, u) => s + u.z, 0) / live.length;
+            } else {
+                tx = opp.x; tz = opp.z;
+            }
+        }
+
         const cfg = ERA_DATA[team === 'player' ? this.playerEra : this.enemyEra];
-        this.specialAttacks.push(new SpecialAttack(cfg.specialType, team, SPECIAL_LEVEL_MULT[level]));
+        const sa = new SpecialAttack(cfg.specialType, team, SPECIAL_LEVEL_MULT[level], tx, tz);
+        this.specialAttacks.push(sa);
         if (team === 'player') { this.specialTimer = SPECIAL_COOLDOWN_MS; sfx('special'); }
         else this.enemySpecialTimer = SPECIAL_COOLDOWN_MS;
         const label = (team === 'enemy' ? "ENEMY " : "") + cfg.specialName.toUpperCase();
-        // Announce over the opponent's corner (where the special will land)
-        const oc = team === 'player' ? ENEMY_CORNER : PLAYER_CORNER;
-        this.particles.push(new Particle(oc.x, 110, team === 'player' ? '#a855f7' : '#ef4444', 'text', label, 24, oc.z));
+        // Announce over the placement center (where the special will land)
+        this.particles.push(new Particle(sa.targetX, 110, team === 'player' ? '#a855f7' : '#ef4444', 'text', label, 24, sa.targetZ));
     }
 
     upgradeSpecial(team) {
@@ -2523,6 +2598,8 @@ class Game {
         // keep clear of either base corner
         if (Math.hypot(x - PLAYER_CORNER.x, z - PLAYER_CORNER.z) < 120) return false;
         if (Math.hypot(x - ENEMY_CORNER.x, z - ENEMY_CORNER.z) < 120) return false;
+        // towers must sit OFF the lane paths (no building on the roads)
+        if (distToLane(x, z) < TOWER_LANE_CLEARANCE) return false;
         const base = team === 'player' ? this.playerBase : this.enemyBase;
         if (base.towers.length >= base.unlockedSlots) return false;
         for (const t of base.towers) {
@@ -2579,8 +2656,12 @@ class Game {
     }
     playerSpecial() {
         if (this.gameState !== 'running') return;
-        if (this.mode === 'guest') { this.net && this.net.sendCommand({ a: 'special' }); return; }
-        this.triggerSpecial('player');
+        // Special is now a placed-on-map ability: must be owned and off cooldown.
+        if (this.specialLevel < 1 || this.specialTimer > 0) return;
+        // Guest and host/solo both arm a placement mode; the click resolves the target.
+        if (this.interaction && typeof this.interaction.armSpecial === 'function') {
+            this.interaction.armSpecial();
+        }
     }
     playerBuySlot() {
         if (this.gameState !== 'running') return;
@@ -2611,7 +2692,15 @@ class Game {
             case 'unlock': this.unlockUnit3('enemy'); break;
             case 'lane': this.unlockLane('enemy', mirrorLane(LANE_BY_IDX[cmd.l | 0] || 'mid')); break;
             case 'evolveu': this.evolveUnit('enemy', cmd.i | 0); break;
-            case 'special': this.triggerSpecial('enemy'); break;
+            case 'special': {
+                // Guest sends its own (mirrored) target coords -> un-mirror into host space.
+                if (Number.isFinite(cmd.x) && Number.isFinite(cmd.z)) {
+                    this.triggerSpecial('enemy', mirrorX(cmd.x | 0), mirrorZ(cmd.z | 0));
+                } else {
+                    this.triggerSpecial('enemy');
+                }
+                break;
+            }
             case 'slot': this.buyTowerSlot('enemy'); break;
             case 'tower': {
                 // guest sends its own (mirrored) coords -> un-mirror x AND z to host space
@@ -2893,7 +2982,14 @@ class Game {
             this.addUnitFree('enemy', this.enemyUnitTier[unitIndex], unitIndex, lane);
 
             if (this.playerUnits.length >= 4 && Math.random() < 0.25) {
-                this.triggerSpecial('enemy');
+                // Aim the AI's special at the average position of the player's live units.
+                const live = this.playerUnits.filter(u => u.state !== 'die');
+                let tx = PLAYER_CORNER.x, tz = PLAYER_CORNER.z;
+                if (live.length) {
+                    tx = live.reduce((s, u) => s + u.x, 0) / live.length;
+                    tz = live.reduce((s, u) => s + u.z, 0) / live.length;
+                }
+                this.triggerSpecial('enemy', tx, tz);
             }
         }
     }
@@ -3043,6 +3139,7 @@ class Game {
         this.gold = snap.eg;
         this.playerEra = snap.ee;
         this.enemyEra = snap.pe;
+        this.updateMusic(); // guest tracks its own (mirrored) era for the soundtrack
         this.specialTimer = snap.est;
 
         // Guest's own purchased-upgrade levels (host's enemy side)
@@ -3259,6 +3356,9 @@ class Game {
         this.updateHud();
         this.updateAffordance();
         this.updateSpecialUI();
+
+        // Kick off the era-appropriate battle music.
+        this.updateMusic();
     }
 
     async ensureRenderer() {
@@ -3340,6 +3440,7 @@ class Game {
         }
         this.showMenuView('menu');
         el("intro-modal").classList.remove("hidden");
+        if (window.Music) window.Music.play('mainmenu');
     }
 
     // ----------------------------------------------------------------------
@@ -3503,6 +3604,7 @@ class Game {
         this._started = false;
         el("lobby-modal").classList.add("hidden");
         el("intro-modal").classList.remove("hidden");
+        if (window.Music) window.Music.play('mainmenu');
     }
 
     // ----------------------------------------------------------------------
@@ -3616,7 +3718,7 @@ class Interaction {
         this.game = game;
         this.r3d = game.r3d;
         this.canvas = game.canvas;
-        this.mode = 'idle';          // 'idle' | 'spawn' | 'tower'
+        this.mode = 'idle';          // 'idle' | 'spawn' | 'tower' | 'special'
         this.dragIndex = -1;
         this.dragMoved = false;
         this.ghost = el('drag-ghost');
@@ -3632,11 +3734,12 @@ class Interaction {
         window.addEventListener('pointermove', (e) => this._move(e));
         window.addEventListener('pointerup', (e) => this._up(e));
         this.canvas.addEventListener('pointerdown', (e) => this._canvasDown(e));
-        this.canvas.addEventListener('contextmenu', (e) => { if (this.mode === 'tower') { e.preventDefault(); this.cancel(); } });
+        this.canvas.addEventListener('contextmenu', (e) => { if (this.mode === 'tower' || this.mode === 'special') { e.preventDefault(); this.cancel(); } });
         window.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.cancel(); });
         this.canvas.addEventListener('pointermove', (e) => {
             this._hover = { x: e.clientX, y: e.clientY };
             if (this.mode === 'tower') this._towerGhost(e.clientX, e.clientY);
+            else if (this.mode === 'special') this._specialGhost(e.clientX, e.clientY);
         });
         this.canvas.addEventListener('pointerleave', () => { this._hover = null; this.game.hideTip(); });
     }
@@ -3738,7 +3841,48 @@ class Interaction {
         r.showTowerGhost(simX, simZ, range, valid);
     }
 
+    // ---- Special-attack placement (targeted, radius) ----
+    armSpecial() {
+        const g = this.game;
+        if (g.gameState !== 'running') return;
+        if (g.specialLevel < 1 || g.specialTimer > 0) return;
+        this.mode = 'special';
+        if (this.r3d.controls) this.r3d.controls.enabled = false;
+        if (this.banner) this.banner.classList.remove('hidden');
+    }
+
+    // Live special placement preview — show an AoE ring at the cursor.
+    _specialGhost(clientX, clientY) {
+        const r = this.r3d;
+        if (!r || typeof r.raycastGround !== 'function') return;
+        const pt = r.raycastGround(clientX, clientY);
+        if (!pt) { if (typeof r.hideAoeGhost === 'function') r.hideAoeGhost(); return; }
+        const simX = pt.x / S + MAP_SIZE / 2;
+        const simZ = pt.z / S + MAP_SIZE / 2;
+        // Valid anywhere on the map (both sides allowed).
+        const valid = simX >= 0 && simX <= MAP_SIZE && simZ >= 0 && simZ <= MAP_SIZE;
+        if (typeof r.showAoeGhost === 'function') r.showAoeGhost(simX, simZ, SPECIAL_RADIUS, valid);
+    }
+
     _canvasDown(e) {
+        if (this.mode === 'special') {
+            if (e.button === 2) { this.cancel(); return; }
+            const pt = this.r3d.raycastGround(e.clientX, e.clientY);
+            if (!pt) return;
+            const simX = pt.x / S + MAP_SIZE / 2;
+            const simZ = pt.z / S + MAP_SIZE / 2;
+            const valid = simX >= 0 && simX <= MAP_SIZE && simZ >= 0 && simZ <= MAP_SIZE;
+            if (valid) {
+                const g = this.game;
+                if (g.mode === 'guest') {
+                    g.net && g.net.sendCommand({ a: 'special', x: Math.round(simX), z: Math.round(simZ) });
+                } else {
+                    g.triggerSpecial('player', simX, simZ);
+                }
+            }
+            this._endSpecial();
+            return;
+        }
         if (this.mode !== 'tower') return;
         if (e.button === 2) { this.cancel(); return; }
         const pt = this.r3d.raycastGround(e.clientX, e.clientY);
@@ -3752,6 +3896,13 @@ class Interaction {
         }
     }
 
+    _endSpecial() {
+        this.mode = 'idle';
+        if (this.r3d.controls) this.r3d.controls.enabled = true;
+        if (this.banner) this.banner.classList.add('hidden');
+        if (this.r3d && typeof this.r3d.hideAoeGhost === 'function') this.r3d.hideAoeGhost();
+    }
+
     cancel() {
         if (this.mode === 'tower') {
             this.mode = 'idle';
@@ -3759,6 +3910,8 @@ class Interaction {
             if (this.banner) this.banner.classList.add('hidden');
             if (this.r3d && typeof this.r3d.hideTowerGhost === 'function') this.r3d.hideTowerGhost();
             this.game.updateButtonsUI();
+        } else if (this.mode === 'special') {
+            this._endSpecial();
         } else if (this.mode === 'spawn') {
             this._endSpawn();
         }

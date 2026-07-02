@@ -52,12 +52,18 @@ export function createRenderer(canvas) {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.06;
 
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x0a0a12, 120, 320);
+    // Corner-to-corner diagonal of the playfield (the thing we must frame).
+    const DIAG = Math.hypot(CORNER3.enemy.x - CORNER3.player.x, CORNER3.enemy.z - CORNER3.player.z); // ~114
 
-    const camera = new THREE.PerspectiveCamera(44, 1, 0.5, 900);
-    // Framed diagonally: look down the mid diagonal toward center, both corners visible.
-    camera.position.set(-92, 96, 92);
+    const scene = new THREE.Scene();
+    // Fog scaled to the field so the far corner reads without hiding the play area.
+    scene.fog = new THREE.Fog(0x0a0a12, DIAG * 1.25, DIAG * 3.4);
+
+    const camera = new THREE.PerspectiveCamera(44, 1, 0.5, 1200);
+    // Framed diagonally: sit off the anti-diagonal (-x,+z) high up, look at
+    // center. Distance is chosen so BOTH base corners fit in view.
+    const camDist = DIAG * 1.45;
+    camera.position.set(-camDist * 0.6, camDist * 0.68, camDist * 0.6);
     camera.lookAt(0, 0, 0);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -66,19 +72,22 @@ export function createRenderer(canvas) {
     controls.screenSpacePanning = false;
     controls.minPolarAngle = 0.42;   // ~24deg
     controls.maxPolarAngle = 1.18;   // ~68deg
-    controls.minDistance = 55;
-    controls.maxDistance = 230;
+    controls.minDistance = DIAG * 0.55;   // ~63
+    controls.maxDistance = DIAG * 2.6;    // ~296 — pull back to see whole map
     controls.target.set(0, 0, 0);
     controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
     controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
 
     // ---- Lights ----
     const key = new THREE.DirectionalLight(0xfff2d6, 1.35);
-    key.position.set(-70, 120, 50);
+    key.position.set(-DIAG * 0.6, DIAG * 1.1, DIAG * 0.45);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
     const sc = key.shadow.camera;
-    sc.left = -90; sc.right = 90; sc.top = 90; sc.bottom = -90; sc.near = 10; sc.far = 320;
+    // Ortho bounds cover the whole diagonal field (+ a margin for props/bases).
+    const shadowExt = DIAG * 0.82;   // ~93
+    sc.left = -shadowExt; sc.right = shadowExt; sc.top = shadowExt; sc.bottom = -shadowExt;
+    sc.near = 10; sc.far = DIAG * 3.2;
     key.shadow.bias = -0.0004;
     key.shadow.normalBias = 0.6;
     scene.add(key);
@@ -301,16 +310,16 @@ export function createRenderer(canvas) {
         const pCorner = { x: CORNER3.player.x, z: CORNER3.player.z };
         const eCorner = { x: CORNER3.enemy.x, z: CORNER3.enemy.z };
         let placed = 0, tries = 0;
-        const MAX = 120;
-        while (placed < MAX && tries < MAX * 20) {
+        const MAX = 150;   // bigger field => a few more props to fill it
+        while (placed < MAX && tries < MAX * 25) {
             tries++;
             // scatter across a region a bit larger than the field
             const x = (rng() * 2 - 1) * (HALF * 1.28);
             const z = (rng() * 2 - 1) * (HALF * 1.28);
-            // keep clear of lanes and bases
-            if (distToLanes(x, z) < 5.5) continue;
-            if (distToCorner(x, z, pCorner) < 12) continue;
-            if (distToCorner(x, z, eCorner) < 12) continue;
+            // keep clear of lanes and bases (bases are ~18 wide at the corners)
+            if (distToLanes(x, z) < 6) continue;
+            if (distToCorner(x, z, pCorner) < 18) continue;
+            if (distToCorner(x, z, eCorner) < 18) continue;
             const roll = rng();
             let node;
             if (roll > 0.42) {
@@ -370,63 +379,477 @@ export function createRenderer(canvas) {
         tex.needsUpdate = true;
     }
 
-    // Build a unit as a Group; parts kept in userData for animation.
-    // NOTE: uses only cached geometries/materials so buildUnit is cheap; reused
-    // by the thumbnail renderer too.
-    function buildUnit(era, ti, teamKey) {
+    // ----------------------------------------------------------------------
+    // UNIT MATERIAL PALETTE per era. Each era reads differently:
+    //   Stone earthy/wood, Ancient bronze, Medieval steel (metalness),
+    //   Modern drab green/gray, Future chrome + emissive. Team color is an
+    //   accent only (banner/trim/crest), never the whole body.
+    // Materials are cached by (era, teamKey) so buildUnit stays cheap.
+    // ----------------------------------------------------------------------
+    const ERA_UNIT = [
+        // Stone — hide/fur/wood
+        { primary: 0x8a6b45, secondary: 0x5b3d24, trim: 0x9a8460, metal: 0.02, rough: 0.95 },
+        // Ancient — bronze
+        { primary: 0xb87333, secondary: 0x8a5a2b, trim: 0xdca24a, metal: 0.55, rough: 0.5 },
+        // Medieval — steel
+        { primary: 0x9aa3ad, secondary: 0x5c6773, trim: 0xd7dde3, metal: 0.8, rough: 0.35 },
+        // Modern — drab green / gunmetal gray
+        { primary: 0x59613a, secondary: 0x3a3f2c, trim: 0x6b7280, metal: 0.35, rough: 0.6 },
+        // Future — chrome + emissive
+        { primary: 0xc9d3dc, secondary: 0x5b6472, trim: 0x22d3ee, metal: 0.9, rough: 0.2 },
+    ];
+    function unitMats(era, teamKey) {
+        const up = ERA_UNIT[era];
         const tc = TEAM[teamKey];
-        const ep = ERA_PALETTE[era];
+        return {
+            // main structural material of this era
+            primary: mat(`u_prim_${era}`, () => std(up.primary, { rough: up.rough, metal: up.metal })),
+            // darker structural / straps / legs
+            secondary: mat(`u_sec_${era}`, () => std(up.secondary, { rough: Math.min(0.95, up.rough + 0.15), metal: up.metal * 0.7 })),
+            // era trim (crest / edge / accents), emissive on Future
+            trim: mat(`u_trim_${era}`, () => std(up.trim, { rough: era >= 3 ? 0.3 : 0.45, metal: era >= 2 ? 0.7 : up.metal, emissive: era === 4 ? up.trim : 0x000000, ei: era === 4 ? 0.9 : 1 })),
+            // team-tinted accent (banner/plume/shield boss)
+            team: mat(`u_team_${teamKey}`, () => std(tc.main, { rough: 0.55, metal: 0.2, emissive: tc.main, ei: 0.12 })),
+            // exposed skin
+            skin: mat('u_skin', () => std(0xd8a066, { rough: 0.75 })),
+            // wood (hafts, chariot, catapult)
+            wood: mat('u_wood', () => std(0x6b4a2a, { rough: 0.9 })),
+            // dark metal / iron (barrels, blades, tracks)
+            iron: mat('u_iron', () => std(0x2f3338, { rough: 0.55, metal: 0.75 })),
+            // fur (mammoth)
+            fur: mat('u_fur', () => std(0x6b4a30, { rough: 1.0 })),
+            // bone / tusk / ivory
+            bone: mat('u_bone', () => std(0xe8e2cf, { rough: 0.7 })),
+            // horse hide
+            horse: mat('u_horse', () => std(0x8a5a3a, { rough: 0.85 })),
+            // glow for lasers / drone eye / mech energy
+            glow: mat('u_glow', () => std(0x22d3ee, { emissive: 0x22d3ee, ei: 1.8, rough: 0.3, color: 0x0a2a30 })),
+        };
+    }
+
+    // Small helpers to keep the factory terse.
+    const M = (g, m, x, y, z) => { const o = new THREE.Mesh(g, m); if (x !== undefined) o.position.set(x, y, z); o.castShadow = true; return o; };
+    const G = {
+        box: (w, h, d, k) => geo(k, () => new THREE.BoxGeometry(w, h, d)),
+        cyl: (rt, rb, h, s, k) => geo(k, () => new THREE.CylinderGeometry(rt, rb, h, s)),
+        cone: (r, h, s, k) => geo(k, () => new THREE.ConeGeometry(r, h, s)),
+        sph: (r, k) => geo(k, () => new THREE.SphereGeometry(r, 12, 10)),
+        ico: (r, d, k) => geo(k, () => new THREE.IcosahedronGeometry(r, d)),
+        torus: (r, t, k) => geo(k, () => new THREE.TorusGeometry(r, t, 6, 16)),
+        dodec: (r, k) => geo(k, () => new THREE.DodecahedronGeometry(r, 0)),
+    };
+
+    // A standing humanoid torso+head+two legs. Returns {torso, legL, legR, headGroup}.
+    // Shared skeleton used by all foot soldiers so leg animation stays consistent.
+    function humanoid(g, mats, opt = {}) {
+        const torso = M(G.box(0.9, 1.1, 0.55, 'h_torso'), opt.torsoMat || mats.primary, 0, 1.5, 0);
+        g.add(torso);
+        // pelvis/hips
+        g.add(M(G.box(0.8, 0.35, 0.5, 'h_hips'), mats.secondary, 0, 0.98, 0));
+        const headGroup = new THREE.Group(); headGroup.position.set(0, 2.28, 0);
+        headGroup.add(M(G.sph(0.34, 'h_head'), mats.skin, 0, 0, 0));
+        g.add(headGroup);
+        const legGeo = G.box(0.3, 0.95, 0.32, 'h_leg');
+        const legL = M(legGeo, mats.secondary, 0.24, 0.5, 0); g.add(legL);
+        const legR = M(legGeo, mats.secondary, -0.24, 0.5, 0); g.add(legR);
+        // arms (static, thin) so the silhouette reads as a person
+        if (!opt.noArms) {
+            g.add(M(G.box(0.22, 0.9, 0.22, 'h_arm'), opt.armMat || mats.primary, 0.56, 1.55, 0));
+            g.add(M(G.box(0.22, 0.9, 0.22, 'h_arm'), opt.armMat || mats.primary, -0.56, 1.55, 0));
+        }
+        return { torso, legL, legR, headGroup };
+    }
+
+    // Build a unit as a Group; parts kept in userData for animation.
+    // NOTE: uses cached geometries/materials so buildUnit is cheap; reused by
+    // the thumbnail renderer too. Every unit fills userData.parts with
+    // { body, legL, legR, weapon, hp } plus optional `hover` for flyers.
+    function buildUnit(era, ti, teamKey) {
         const g = new THREE.Group();
         const parts = {};
-        const bodyMat = mat(`body_${teamKey}`, () => std(tc.main, { rough: 0.6, metal: era >= 3 ? 0.55 : 0.15 }));
-        const eraMat = mat(`era_${era}`, () => std(ep.accent, { rough: 0.5, metal: era >= 3 ? 0.6 : 0.2, emissive: era === 4 ? ep.accent : 0x000000, ei: era === 4 ? 0.5 : 1 }));
-        const skinMat = mat('skin', () => std(0xd8a066, { rough: 0.7 }));
-        const darkMat = mat(`dark_${teamKey}`, () => std(tc.dark, { rough: 0.7 }));
+        const mats = unitMats(era, teamKey);
+        // Melee = slot 0 (and Knight/Hoplite/Clubman/Spearman/Rifleman... no:
+        // melee identity is decided in the animator via u.range; here we just
+        // build the look. Slot 2 heavies get bigger silhouettes.
 
+        // ==================================================================
+        // FUTURE DRONE — hovering orb, no legs (special-cased first)
+        // ==================================================================
         if (era === 4 && ti === 1) {
-            // Future Drone — hovering orb, no legs
-            const orb = new THREE.Mesh(geo('orb', () => new THREE.IcosahedronGeometry(1, 0)), bodyMat);
-            orb.scale.set(1.1, 0.9, 1.1); orb.castShadow = true; g.add(orb); parts.body = orb;
-            const eye = new THREE.Mesh(geo('eye', () => new THREE.SphereGeometry(0.35, 8, 8)), mat('drone_eye', () => std(0x22d3ee, { emissive: 0x22d3ee, ei: 1.6, rough: 0.3 })));
-            eye.position.set(0.7, 0, 0); g.add(eye); parts.weapon = eye;
+            const orb = M(G.ico(0.85, 1, 'd_orb'), mats.primary); orb.scale.set(1.15, 0.85, 1.15);
+            g.add(orb); parts.body = orb;
+            // sensor ring
+            const ring = M(G.torus(0.95, 0.08, 'd_ring'), mats.trim); ring.rotation.x = Math.PI / 2; ring.position.y = 0;
+            g.add(ring);
+            // glowing eye + thruster underglow
+            const eye = M(G.sph(0.3, 'd_eye'), mats.glow); eye.position.set(0.75, 0.05, 0);
+            g.add(eye); parts.weapon = eye;
+            g.add(M(G.cone(0.35, 0.4, 8, 'd_thrust'), mats.glow, 0, -0.7, 0));
             parts.hover = true;
             g.position.y = 2.4;
-        } else if (ti === 2) {
-            // Heavy — wide chunky body on a base/tracks
-            const hull = new THREE.Mesh(geo('hull', () => new THREE.BoxGeometry(2.6, 1.5, 1.9)), bodyMat);
-            hull.position.y = 1.4; hull.castShadow = true; g.add(hull); parts.body = hull;
-            const head = new THREE.Mesh(geo('hhead', () => new THREE.BoxGeometry(1.1, 1.0, 1.1)), darkMat);
-            head.position.set(-0.3, 2.4, 0); head.castShadow = true; g.add(head);
-            const cannon = new THREE.Mesh(geo('cannon', () => new THREE.CylinderGeometry(0.22, 0.28, 2.4, 8)), eraMat);
-            cannon.rotation.z = Math.PI / 2; cannon.position.set(1.4, 2.2, 0); g.add(cannon); parts.weapon = cannon;
-            const trackGeo = geo('track', () => new THREE.BoxGeometry(2.8, 0.6, 0.6));
-            const t1 = new THREE.Mesh(trackGeo, darkMat); t1.position.set(0, 0.4, 0.9); g.add(t1);
-            const t2 = new THREE.Mesh(trackGeo, darkMat); t2.position.set(0, 0.4, -0.9); g.add(t2);
-            parts.legL = t1; parts.legR = t2;
-        } else {
-            // Humanoid (light melee ti=0, ranged ti=1)
-            const torso = new THREE.Mesh(geo('torso', () => new THREE.BoxGeometry(1.0, 1.15, 0.7)), bodyMat);
-            torso.position.y = 1.55; torso.castShadow = true; g.add(torso); parts.body = torso;
-            const head = new THREE.Mesh(geo('uhead', () => new THREE.SphereGeometry(0.42, 10, 8)), skinMat);
-            head.position.y = 2.45; head.castShadow = true; g.add(head);
-            const helm = new THREE.Mesh(geo('helm', () => new THREE.SphereGeometry(0.46, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2)), eraMat);
-            helm.position.y = 2.55; g.add(helm);
-            const legGeo = geo('leg', () => new THREE.BoxGeometry(0.34, 1.0, 0.34));
-            const legL = new THREE.Mesh(legGeo, darkMat); legL.position.set(0.26, 0.55, 0); legL.castShadow = true; g.add(legL); parts.legL = legL;
-            const legR = new THREE.Mesh(legGeo, darkMat); legR.position.set(-0.26, 0.55, 0); legR.castShadow = true; g.add(legR); parts.legR = legR;
-            // Weapon prop
-            let weapon;
-            if (ti === 1) {
-                weapon = new THREE.Mesh(geo('rod', () => new THREE.CylinderGeometry(0.1, 0.1, 1.5, 6)), eraMat);
-                weapon.rotation.z = Math.PI / 2; weapon.position.set(0.9, 1.7, 0.2);
-            } else {
-                weapon = new THREE.Mesh(geo('blade', () => new THREE.BoxGeometry(0.18, 1.5, 0.18)), eraMat);
-                weapon.position.set(0.75, 2.0, 0.1); weapon.rotation.z = -0.5;
-            }
-            weapon.castShadow = true; g.add(weapon); parts.weapon = weapon;
+            const hp = hpBarSprite(); hp.position.y = 1.7; g.add(hp); parts.hp = hp;
+            g.userData = { parts, era, ti, teamKey, animOff: Math.random() * 6.28 };
+            return g;
         }
 
-        const hp = hpBarSprite(); hp.position.y = (ti === 2 ? 3.6 : 3.4); g.add(hp); parts.hp = hp;
+        switch (`${era}_${ti}`) {
+            // ============================= STONE (0) =====================
+            case '0_0': { // Clubman — caveman with a wooden club
+                const h = humanoid(g, mats, { torsoMat: mats.skin, armMat: mats.skin });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                // fur loincloth + shoulder pelt
+                g.add(M(G.box(0.95, 0.5, 0.6, 'cl_pelt'), mats.fur, 0, 1.0, 0));
+                g.add(M(G.box(0.5, 0.25, 0.5, 'cl_shldr'), mats.fur, 0.4, 1.9, 0));
+                h.headGroup.add(M(G.sph(0.36, 'cl_hair'), mats.fur, 0, 0.12, -0.06));
+                // club: thick wooden bludgeon in right hand
+                const club = new THREE.Group();
+                club.add(M(G.cyl(0.09, 0.11, 1.0, 6, 'cl_haft'), mats.wood, 0, 0.4, 0));
+                club.add(M(G.ico(0.34, 0, 'cl_head'), mats.wood, 0, 1.0, 0));
+                club.position.set(0.7, 1.4, 0.15); club.rotation.z = -0.6;
+                g.add(club); parts.weapon = club;
+                break;
+            }
+            case '0_1': { // Spearman — humanoid with a long spear
+                const h = humanoid(g, mats, { torsoMat: mats.fur });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                g.add(M(G.box(0.9, 0.4, 0.55, 'sp_wrap'), mats.fur, 0, 1.0, 0));
+                // long spear held upright-forward in right hand
+                const spear = new THREE.Group();
+                spear.add(M(G.cyl(0.05, 0.05, 3.2, 6, 'sp_haft'), mats.wood, 0, 0, 0));
+                spear.add(M(G.cone(0.12, 0.5, 6, 'sp_tip'), mats.bone, 0, 1.75, 0));
+                spear.position.set(0.62, 1.6, 0.2); spear.rotation.x = -0.12;
+                g.add(spear); parts.weapon = spear;
+                break;
+            }
+            case '0_2': { // Mammoth Rider — woolly MAMMOTH + small rider
+                g.scale.setScalar(1.0);
+                // big furry body
+                const body = M(G.sph(1.5, 'mm_body'), mats.fur, 0, 2.2, 0); body.scale.set(1.5, 1.25, 1.9);
+                g.add(body); parts.body = body;
+                // head
+                const head = M(G.sph(0.95, 'mm_head'), mats.fur, 0, 2.5, 2.4); head.scale.set(1, 1.05, 0.9);
+                g.add(head);
+                // dome forehead tuft
+                g.add(M(G.sph(0.8, 'mm_tuft'), mats.fur, 0, 3.2, 2.1));
+                // trunk (stacked tapered segments curving down)
+                const trunk = new THREE.Group();
+                trunk.add(M(G.cyl(0.28, 0.4, 0.7, 7, 'mm_tr0'), mats.fur, 0, -0.35, 0));
+                trunk.add(M(G.cyl(0.2, 0.28, 0.7, 7, 'mm_tr1'), mats.fur, 0, -1.0, 0.2));
+                trunk.add(M(G.cyl(0.14, 0.2, 0.6, 7, 'mm_tr2'), mats.fur, 0.02, -1.55, 0.5));
+                trunk.position.set(0, 2.7, 3.1);
+                g.add(trunk);
+                // two big white curved TUSKS: tapered cones sweeping forward &
+                // curving up at the tip (base near mouth, point out front).
+                const tuskGeo = G.cyl(0.03, 0.14, 1.8, 7, 'mm_tusk');
+                function tusk(sx) {
+                    const grp = new THREE.Group(); grp.position.set(sx * 0.5, 1.7, 3.0);
+                    // lower straight segment angled forward-down
+                    const s0 = M(tuskGeo, mats.bone, 0, 0.4, 0.5); s0.rotation.x = 1.15; grp.add(s0);
+                    // upcurved tip
+                    const tip = M(G.cyl(0.02, 0.06, 0.9, 7, 'mm_tusktip'), mats.bone, sx * 0.05, 0.55, 1.55); tip.rotation.x = 0.35; grp.add(tip);
+                    grp.rotation.y = sx * 0.12;
+                    return grp;
+                }
+                g.add(tusk(1)); g.add(tusk(-1));
+                // ears
+                g.add(M(G.box(0.12, 0.7, 0.6, 'mm_ear'), mats.fur, 0.95, 2.7, 2.2));
+                g.add(M(G.box(0.12, 0.7, 0.6, 'mm_ear'), mats.fur, -0.95, 2.7, 2.2));
+                // 4 legs (front pair animate)
+                const legGeo = G.cyl(0.32, 0.38, 1.6, 7, 'mm_leg');
+                const fL = M(legGeo, mats.fur, 0.9, 0.8, 1.5); g.add(fL);
+                const fR = M(legGeo, mats.fur, -0.9, 0.8, 1.5); g.add(fR);
+                g.add(M(legGeo, mats.fur, 0.9, 0.8, -1.2));
+                g.add(M(legGeo, mats.fur, -0.9, 0.8, -1.2));
+                parts.legL = fL; parts.legR = fR;
+                // small rider on top with a spear (weapon animates)
+                const rider = new THREE.Group(); rider.position.set(0, 3.6, -0.2);
+                rider.add(M(G.box(0.5, 0.7, 0.35, 'mm_rtorso'), mats.skin, 0, 0.35, 0));
+                rider.add(M(G.sph(0.24, 'mm_rhead'), mats.skin, 0, 0.85, 0));
+                const rspear = M(G.cyl(0.04, 0.04, 1.8, 6, 'mm_rspear'), mats.wood, 0, 0, 0);
+                rspear.position.set(0.35, 0.5, 0.2); rspear.rotation.x = -0.3;
+                rider.add(rspear); parts.weapon = rspear;
+                g.add(rider);
+                break;
+            }
+
+            // ============================ ANCIENT (1) ===================
+            case '1_0': { // Hoplite — round shield + short spear + crested helm
+                const h = humanoid(g, mats, { torsoMat: mats.primary });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                // crested helm (bronze bowl + team-tinted crest)
+                h.headGroup.add(M(G.sph(0.42, 'ho_helm'), mats.primary, 0, 0.06, 0));
+                const crest = M(G.box(0.1, 0.28, 0.55, 'ho_crest'), mats.team, 0, 0.5, -0.05); crest.rotation.x = 0.1;
+                h.headGroup.add(crest);
+                // round shield (bronze disc + team boss) on left arm
+                const shield = M(G.cyl(0.6, 0.6, 0.12, 16, 'ho_shield'), mats.trim);
+                shield.rotation.z = Math.PI / 2; shield.position.set(-0.7, 1.5, 0.15);
+                g.add(shield);
+                g.add(M(G.sph(0.16, 'ho_boss'), mats.team, -0.78, 1.5, 0.15));
+                // short spear in right hand
+                const spear = new THREE.Group();
+                spear.add(M(G.cyl(0.05, 0.05, 2.2, 6, 'ho_haft'), mats.wood, 0, 0, 0));
+                spear.add(M(G.cone(0.1, 0.4, 6, 'ho_tip'), mats.trim, 0, 1.25, 0));
+                spear.position.set(0.62, 1.6, 0.2);
+                g.add(spear); parts.weapon = spear;
+                break;
+            }
+            case '1_1': { // Archer — humanoid drawing a BOW
+                const h = humanoid(g, mats, { torsoMat: mats.secondary, noArms: true });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                // simple hood
+                h.headGroup.add(M(G.cone(0.4, 0.4, 7, 'ar_hood'), mats.primary, 0, 0.2, 0));
+                // draw arm forward, string arm back
+                g.add(M(G.box(0.2, 0.85, 0.2, 'ar_arm'), mats.secondary, 0.5, 1.6, 0.35));
+                g.add(M(G.box(0.2, 0.7, 0.2, 'ar_arm2'), mats.secondary, -0.35, 1.55, -0.1));
+                // BOW: a torus-arc (half ring) held forward + drawn arrow
+                const bow = new THREE.Group();
+                const arc = M(G.torus(0.7, 0.05, 'ar_bow'), mats.wood, 0, 0, 0);
+                arc.rotation.y = Math.PI / 2;
+                bow.add(arc);
+                // string (thin box)
+                bow.add(M(G.box(0.02, 1.3, 0.02, 'ar_string'), mats.bone, 0, 0, -0.62));
+                // nocked arrow pointing forward (+z after facing)
+                bow.add(M(G.cyl(0.03, 0.03, 1.1, 5, 'ar_arrow'), mats.wood, 0, 0, 0.3));
+                bow.position.set(0.55, 1.6, 0.55);
+                g.add(bow); parts.weapon = bow;
+                break;
+            }
+            case '1_2': { // War Chariot — 2-wheeled chariot pulled by a horse + driver
+                g.scale.setScalar(0.95);
+                // horse in front (+z)
+                const horse = new THREE.Group(); horse.position.set(0, 0, 2.2);
+                const hbody = M(G.box(0.7, 0.75, 1.8, 'ch_hbody'), mats.horse, 0, 1.35, 0); horse.add(hbody);
+                const neck = M(G.box(0.4, 0.9, 0.4, 'ch_neck'), mats.horse, 0, 1.9, 0.9); neck.rotation.x = -0.5; horse.add(neck);
+                horse.add(M(G.box(0.35, 0.45, 0.6, 'ch_hhead'), mats.horse, 0, 2.35, 1.25));
+                const hlegGeo = G.cyl(0.1, 0.1, 1.3, 6, 'ch_hleg');
+                const hlL = M(hlegGeo, mats.horse, 0.25, 0.65, 0.7); horse.add(hlL);
+                const hlR = M(hlegGeo, mats.horse, -0.25, 0.65, 0.7); horse.add(hlR);
+                horse.add(M(hlegGeo, mats.horse, 0.25, 0.65, -0.7));
+                horse.add(M(hlegGeo, mats.horse, -0.25, 0.65, -0.7));
+                g.add(horse);
+                parts.legL = hlL; parts.legR = hlR;
+                // chariot cab (open box) behind
+                const cab = M(G.box(1.4, 0.9, 1.1, 'ch_cab'), mats.wood, 0, 1.1, -0.4); g.add(cab); parts.body = cab;
+                g.add(M(G.box(1.5, 0.15, 1.2, 'ch_floor'), mats.wood, 0, 0.65, -0.4));
+                // trim rail (bronze)
+                g.add(M(G.box(1.5, 0.12, 1.2, 'ch_rail'), mats.trim, 0, 1.6, -0.4));
+                // two big wheels (spoked look via thin torus)
+                const wheelGeo = G.torus(0.6, 0.09, 'ch_wheel');
+                const wL = M(wheelGeo, mats.iron, 0.85, 0.6, -0.4); wL.rotation.y = Math.PI / 2;
+                const wR = M(wheelGeo, mats.iron, -0.85, 0.6, -0.4); wR.rotation.y = Math.PI / 2;
+                g.add(wL); g.add(wR);
+                // driver in the cab holding a whip
+                const driver = new THREE.Group(); driver.position.set(0, 1.6, -0.5);
+                driver.add(M(G.box(0.4, 0.6, 0.3, 'ch_dtorso'), mats.primary, 0, 0.3, 0));
+                driver.add(M(G.sph(0.22, 'ch_dhead'), mats.skin, 0, 0.75, 0));
+                const whip = M(G.cyl(0.03, 0.03, 1.2, 5, 'ch_whip'), mats.wood, 0, 0, 0);
+                whip.position.set(0.3, 0.5, 0.5); whip.rotation.x = -0.6;
+                driver.add(whip); parts.weapon = whip;
+                g.add(driver);
+                break;
+            }
+
+            // ============================ MEDIEVAL (2) ==================
+            case '2_0': { // Knight — sword + heater shield + plumed helm
+                const h = humanoid(g, mats, { torsoMat: mats.primary });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                // steel helm with plume
+                h.headGroup.add(M(G.cyl(0.36, 0.36, 0.55, 10, 'kn_helm'), mats.primary, 0, 0.05, 0));
+                h.headGroup.add(M(G.box(0.5, 0.06, 0.06, 'kn_visor'), mats.secondary, 0, 0.02, 0.32));
+                h.headGroup.add(M(G.cone(0.1, 0.5, 6, 'kn_plume'), mats.team, 0, 0.45, 0));
+                // pauldrons
+                g.add(M(G.sph(0.28, 'kn_pauld'), mats.trim, 0.55, 1.95, 0));
+                g.add(M(G.sph(0.28, 'kn_pauld'), mats.trim, -0.55, 1.95, 0));
+                // heater shield (tapered) on left, team charge
+                const shield = new THREE.Group();
+                shield.add(M(G.box(0.7, 0.9, 0.1, 'kn_shield'), mats.trim, 0, 0, 0));
+                shield.add(M(G.cone(0.42, 0.5, 4, 'kn_shieldpt'), mats.trim, 0, -0.62, 0));
+                shield.add(M(G.box(0.35, 0.35, 0.04, 'kn_charge'), mats.team, 0, 0.1, 0.08));
+                shield.position.set(-0.72, 1.45, 0.2);
+                g.add(shield);
+                // longsword in right hand
+                const sword = new THREE.Group();
+                sword.add(M(G.box(0.12, 1.5, 0.05, 'kn_blade'), mats.trim, 0, 0.85, 0));
+                sword.add(M(G.box(0.5, 0.12, 0.12, 'kn_guard'), mats.secondary, 0, 0.1, 0));
+                sword.add(M(G.cyl(0.06, 0.06, 0.35, 6, 'kn_grip'), mats.wood, 0, -0.1, 0));
+                sword.position.set(0.68, 1.5, 0.2);
+                g.add(sword); parts.weapon = sword;
+                break;
+            }
+            case '2_1': { // Crossbowman — horizontal CROSSBOW
+                const h = humanoid(g, mats, { torsoMat: mats.secondary, noArms: true });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                h.headGroup.add(M(G.cyl(0.34, 0.34, 0.4, 10, 'cb_helm'), mats.primary, 0, 0.05, 0));
+                g.add(M(G.box(0.2, 0.8, 0.2, 'cb_arm'), mats.secondary, 0.45, 1.6, 0.3));
+                g.add(M(G.box(0.2, 0.8, 0.2, 'cb_arm2'), mats.secondary, -0.45, 1.6, 0.3));
+                // CROSSBOW held horizontally forward: stock along +z, bow-arms across x
+                const cbow = new THREE.Group();
+                cbow.add(M(G.box(0.1, 0.12, 1.1, 'cb_stock'), mats.wood, 0, 0, 0.1));
+                cbow.add(M(G.box(1.3, 0.06, 0.1, 'cb_arms'), mats.iron, 0, 0.02, 0.35));
+                cbow.add(M(G.cyl(0.03, 0.03, 0.9, 5, 'cb_bolt'), mats.trim, 0, 0.08, 0.4)); // loaded bolt
+                cbow.position.set(0.3, 1.55, 0.5);
+                g.add(cbow); parts.weapon = cbow;
+                break;
+            }
+            case '2_2': { // Catapult — wheeled wooden frame + throwing arm
+                g.scale.setScalar(1.0);
+                // base frame
+                const frame = M(G.box(2.0, 0.5, 2.6, 'ct_frame'), mats.wood, 0, 0.9, 0); g.add(frame); parts.body = frame;
+                g.add(M(G.box(0.25, 1.4, 0.25, 'ct_postA'), mats.wood, 0.7, 1.6, 0.3));
+                g.add(M(G.box(0.25, 1.4, 0.25, 'ct_postB'), mats.wood, -0.7, 1.6, 0.3));
+                // cross beam (fulcrum axle) — cylinder laid across x
+                const axle = M(G.cyl(0.12, 0.12, 1.6, 8, 'ct_axle'), mats.iron, 0, 2.2, 0.3); axle.rotation.z = Math.PI / 2;
+                g.add(axle);
+                // throwing ARM (animates) — pivot near fulcrum, bucket at end
+                const arm = new THREE.Group(); arm.position.set(0, 2.2, 0.3);
+                const beam = M(G.box(0.18, 0.18, 2.6, 'ct_arm'), mats.wood, 0, 0, -1.0); arm.add(beam);
+                arm.add(M(G.cyl(0.3, 0.3, 0.3, 10, 'ct_bucket'), mats.iron, 0, 0.15, -2.1));
+                arm.add(M(G.ico(0.28, 0, 'ct_rock'), mats.secondary, 0, 0.35, -2.1));
+                arm.rotation.x = -0.6;
+                g.add(arm); parts.weapon = arm;
+                // reinforcement + trim
+                g.add(M(G.box(2.1, 0.15, 0.3, 'ct_brace'), mats.trim, 0, 1.2, -0.9));
+                // two wheels each side
+                const wheelGeo = G.torus(0.55, 0.14, 'ct_wheel');
+                for (const [wx, wz] of [[1.1, 0.8], [-1.1, 0.8], [1.1, -0.8], [-1.1, -0.8]]) {
+                    const w = M(wheelGeo, mats.iron, wx, 0.55, wz); w.rotation.y = Math.PI / 2; g.add(w);
+                }
+                parts.legL = null; parts.legR = null;
+                break;
+            }
+
+            // ============================ MODERN (3) ====================
+            case '3_0': { // Rifleman — soldier with rifle + helmet
+                const h = humanoid(g, mats, { torsoMat: mats.primary, noArms: true });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                // combat helmet (flattened dome)
+                const rfHelm = M(G.sph(0.4, 'rf_helm'), mats.primary, 0, 0.08, 0); rfHelm.scale.set(1, 0.8, 1.05);
+                h.headGroup.add(rfHelm);
+                // webbing / vest
+                g.add(M(G.box(0.95, 0.5, 0.6, 'rf_vest'), mats.secondary, 0, 1.65, 0));
+                // arms forward gripping rifle
+                g.add(M(G.box(0.2, 0.8, 0.2, 'rf_arm'), mats.primary, 0.45, 1.6, 0.3));
+                g.add(M(G.box(0.2, 0.7, 0.2, 'rf_arm2'), mats.primary, -0.35, 1.55, 0.15));
+                // RIFLE along +z (forward), dark iron with wood stock
+                const rifle = new THREE.Group();
+                rifle.add(M(G.box(0.1, 0.14, 1.3, 'rf_body'), mats.iron, 0, 0, 0.15));
+                const rfBarrel = M(G.cyl(0.04, 0.04, 0.6, 6, 'rf_barrel'), mats.iron); rfBarrel.rotation.x = Math.PI / 2; rfBarrel.position.set(0, 0.04, 0.85);
+                rifle.add(rfBarrel);
+                rifle.add(M(G.box(0.09, 0.22, 0.35, 'rf_stock'), mats.wood, 0, -0.05, -0.5));
+                rifle.position.set(0.3, 1.55, 0.4);
+                g.add(rifle); parts.weapon = rifle;
+                break;
+            }
+            case '3_1': { // Grenadier — soldier with grenade launcher (fat barrel)
+                const h = humanoid(g, mats, { torsoMat: mats.primary, noArms: true });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                h.headGroup.add(M(G.sph(0.4, 'gr_helm'), mats.primary, 0, 0.08, 0));
+                g.add(M(G.box(0.95, 0.5, 0.62, 'gr_vest'), mats.secondary, 0, 1.65, 0));
+                // grenade bandolier (team-tinted pouches)
+                g.add(M(G.box(0.7, 0.18, 0.66, 'gr_belt'), mats.team, 0, 1.35, 0));
+                g.add(M(G.box(0.2, 0.8, 0.2, 'gr_arm'), mats.primary, 0.45, 1.6, 0.3));
+                g.add(M(G.box(0.2, 0.7, 0.2, 'gr_arm2'), mats.primary, -0.35, 1.55, 0.15));
+                // GRENADE LAUNCHER — short fat barrel + drum
+                const gl = new THREE.Group();
+                gl.add(M(G.box(0.12, 0.16, 0.9, 'gl_body'), mats.iron, 0, 0, 0.05));
+                const barrel = M(G.cyl(0.13, 0.13, 0.7, 10, 'gl_barrel'), mats.iron, 0, 0.02, 0.6); barrel.rotation.x = Math.PI / 2;
+                gl.add(barrel);
+                const drum = M(G.cyl(0.2, 0.2, 0.18, 10, 'gl_drum'), mats.trim, 0, -0.02, -0.05); drum.rotation.x = Math.PI / 2;
+                gl.add(drum);
+                gl.add(M(G.box(0.08, 0.2, 0.3, 'gl_stock'), mats.wood, 0, -0.05, -0.4));
+                gl.position.set(0.3, 1.55, 0.4);
+                g.add(gl); parts.weapon = gl;
+                break;
+            }
+            case '3_2': { // Tank — actual armored TANK
+                g.scale.setScalar(1.0);
+                // hull
+                const hull = M(G.box(2.6, 0.9, 3.4, 'tk_hull'), mats.primary, 0, 1.3, 0); g.add(hull); parts.body = hull;
+                // sloped glacis
+                const glacis = M(G.box(2.6, 0.7, 1.0, 'tk_glacis'), mats.primary, 0, 1.1, 1.8); glacis.rotation.x = 0.5; g.add(glacis);
+                // turret + long barrel
+                const turret = M(G.cyl(1.0, 1.15, 0.8, 10, 'tk_turret'), mats.secondary, 0, 2.1, -0.2); g.add(turret);
+                const barrel = M(G.cyl(0.16, 0.16, 2.6, 10, 'tk_barrel'), mats.iron); barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 2.15, 1.7);
+                g.add(barrel); parts.weapon = barrel;
+                g.add(M(G.box(0.4, 0.35, 0.4, 'tk_hatch'), mats.trim, 0.35, 2.6, -0.4));
+                // tracks (two long boxes) — animate as "legs" (slight bob)
+                const trackGeo = G.box(0.7, 0.85, 3.8, 'tk_track');
+                const tL = M(trackGeo, mats.iron, 1.35, 0.7, 0); g.add(tL);
+                const tR = M(trackGeo, mats.iron, -1.35, 0.7, 0); g.add(tR);
+                parts.legL = tL; parts.legR = tR;
+                // road wheels hint
+                for (let i = -1; i <= 1; i++) {
+                    const w = M(G.cyl(0.35, 0.35, 0.2, 8, 'tk_wheel'), mats.secondary, 1.35, 0.55, i * 1.1); w.rotation.z = Math.PI / 2; g.add(w);
+                    const w2 = M(G.cyl(0.35, 0.35, 0.2, 8, 'tk_wheel'), mats.secondary, -1.35, 0.55, i * 1.1); w2.rotation.z = Math.PI / 2; g.add(w2);
+                }
+                break;
+            }
+
+            // ============================ FUTURE (4) ====================
+            case '4_0': { // Laser Soldier — sleek trooper + glowing laser rifle
+                const h = humanoid(g, mats, { torsoMat: mats.primary, noArms: true });
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                // sleek visored helm with emissive trim
+                h.headGroup.add(M(G.sph(0.4, 'ls_helm'), mats.primary, 0, 0.05, 0));
+                h.headGroup.add(M(G.box(0.42, 0.1, 0.1, 'ls_visor'), mats.glow, 0, 0.02, 0.34));
+                // chest core (emissive)
+                g.add(M(G.box(0.3, 0.3, 0.1, 'ls_core'), mats.glow, 0, 1.7, 0.3));
+                g.add(M(G.box(0.2, 0.8, 0.2, 'ls_arm'), mats.primary, 0.45, 1.6, 0.3));
+                g.add(M(G.box(0.2, 0.7, 0.2, 'ls_arm2'), mats.primary, -0.35, 1.55, 0.15));
+                // LASER RIFLE — chrome body + glowing emitter
+                const lr = new THREE.Group();
+                lr.add(M(G.box(0.12, 0.14, 1.2, 'ls_body'), mats.primary, 0, 0, 0.1));
+                const emitter = M(G.cyl(0.08, 0.05, 0.5, 8, 'ls_emit'), mats.glow, 0, 0.02, 0.75); emitter.rotation.x = Math.PI / 2;
+                lr.add(emitter);
+                lr.add(M(G.box(0.06, 0.5, 0.06, 'ls_coil'), mats.glow, 0, 0.16, 0.2));
+                lr.position.set(0.3, 1.55, 0.4);
+                g.add(lr); parts.weapon = lr;
+                break;
+            }
+            case '4_2': { // Battle Mech — big bipedal MECH + shoulder cannons
+                g.scale.setScalar(1.0);
+                // cockpit torso
+                const torso = M(G.box(1.8, 1.6, 1.4, 'mc_torso'), mats.primary, 0, 3.4, 0); g.add(torso); parts.body = torso;
+                // cockpit glow eye
+                g.add(M(G.box(0.9, 0.3, 0.1, 'mc_eye'), mats.glow, 0, 3.7, 0.72));
+                // hip block
+                g.add(M(G.box(1.4, 0.7, 1.2, 'mc_hip'), mats.secondary, 0, 2.4, 0));
+                // shoulder cannons (weapon = right cannon group, both visible)
+                const cannons = new THREE.Group();
+                const cannonGeo = G.cyl(0.18, 0.22, 1.6, 10, 'mc_cannon');
+                const cL = M(cannonGeo, mats.iron); cL.rotation.x = Math.PI / 2; cL.position.set(1.15, 4.0, 0.6); cannons.add(cL);
+                const cR = M(cannonGeo, mats.iron); cR.rotation.x = Math.PI / 2; cR.position.set(-1.15, 4.0, 0.6); cannons.add(cR);
+                cannons.add(M(G.box(0.5, 0.5, 0.5, 'mc_pod'), mats.primary, 1.15, 4.0, -0.2));
+                cannons.add(M(G.box(0.5, 0.5, 0.5, 'mc_pod'), mats.primary, -1.15, 4.0, -0.2));
+                g.add(cannons); parts.weapon = cannons;
+                // two big legs (thigh + shin), animate
+                function mechLeg(sx) {
+                    const leg = new THREE.Group(); leg.position.set(sx, 2.1, 0);
+                    leg.add(M(G.box(0.55, 1.2, 0.6, 'mc_thigh'), mats.primary, 0, -0.5, 0));
+                    leg.add(M(G.box(0.45, 1.1, 0.5, 'mc_shin'), mats.secondary, 0, -1.55, 0.1));
+                    leg.add(M(G.box(0.6, 0.25, 0.9, 'mc_foot'), mats.iron, 0, -2.15, 0.25));
+                    return leg;
+                }
+                const legL = mechLeg(0.65); g.add(legL); parts.legL = legL;
+                const legR = mechLeg(-0.65); g.add(legR); parts.legR = legR;
+                break;
+            }
+
+            default: { // fallback humanoid (shouldn't hit)
+                const h = humanoid(g, mats);
+                parts.body = h.torso; parts.legL = h.legL; parts.legR = h.legR;
+                parts.weapon = M(G.box(0.15, 1.4, 0.15, 'fb_w'), mats.trim, 0.7, 1.9, 0.1);
+                g.add(parts.weapon);
+                break;
+            }
+        }
+
+        // Silhouettes are sized per identity (foot soldiers ~2.5u tall, heavies
+        // and mounts noticeably bigger), roughly matching each unit's sim
+        // width/height so relative scale reads correctly on the field.
+        const hp = hpBarSprite();
+        hp.position.y = (ti === 2 ? (era === 4 ? 5.4 : 4.0) : 3.4);
+        g.add(hp); parts.hp = hp;
         g.userData = { parts, era, ti, teamKey, animOff: Math.random() * 6.28 };
         return g;
     }
@@ -720,6 +1143,57 @@ export function createRenderer(canvas) {
     }
 
     // ======================================================================
+    // SPECIAL-ATTACK PLACEMENT GHOST (translucent AoE disc + bright ring)
+    // ======================================================================
+    let aoeGroup = null, aoeDisc = null, aoeRing = null, aoeMark = null;
+    let aoeRadius = -1;
+    function ensureAoe() {
+        if (aoeGroup) return;
+        aoeGroup = new THREE.Group();
+        // filled translucent disc (unit-radius circle, scaled per radius)
+        const discMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false });
+        aoeDisc = new THREE.Mesh(new THREE.CircleGeometry(1, 48), discMat);
+        aoeDisc.rotation.x = -Math.PI / 2; aoeDisc.position.y = 0.05;
+        aoeDisc.userData.mat = discMat;
+        aoeGroup.add(aoeDisc);
+        // bright ring outline (geometry rebuilt only when radius changes)
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
+        aoeRing = new THREE.Mesh(new THREE.RingGeometry(1, 1.12, 64), ringMat);
+        aoeRing.rotation.x = -Math.PI / 2; aoeRing.position.y = 0.07;
+        aoeRing.userData.mat = ringMat;
+        aoeGroup.add(aoeRing);
+        // small center marker (cross-ish)
+        const markMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false });
+        aoeMark = new THREE.Mesh(new THREE.CircleGeometry(0.5, 12), markMat);
+        aoeMark.rotation.x = -Math.PI / 2; aoeMark.position.y = 0.09;
+        aoeMark.userData.mat = markMat;
+        aoeGroup.add(aoeMark);
+        aoeGroup.visible = false;
+        scene.add(aoeGroup);
+    }
+    function showAoeGhost(simX, simZ, radiusSim, valid) {
+        ensureAoe();
+        aoeGroup.visible = true;
+        aoeGroup.position.set(mapX(simX), 0, mapZ(simZ));
+        const col = valid ? 0x22c55e : 0xef4444;
+        aoeDisc.userData.mat.color.setHex(col);
+        aoeRing.userData.mat.color.setHex(col);
+        aoeMark.userData.mat.color.setHex(col);
+        const rad = Math.max(0.5, radiusSim * S);
+        // scale the unit-radius disc; only rebuild the RING geometry on change.
+        aoeDisc.scale.set(rad, rad, 1);
+        if (Math.abs(rad - aoeRadius) > 0.05) {
+            aoeRadius = rad;
+            aoeRing.geometry.dispose();
+            const w = Math.max(0.35, rad * 0.04);
+            aoeRing.geometry = new THREE.RingGeometry(rad - w, rad, 72);
+        }
+    }
+    function hideAoeGhost() {
+        if (aoeGroup) aoeGroup.visible = false;
+    }
+
+    // ======================================================================
     // UNIT THUMBNAIL RENDERER (separate offscreen renderer, cached)
     // ======================================================================
     let thumbRenderer = null, thumbScene = null, thumbCam = null, thumbCanvas = null;
@@ -742,6 +1216,9 @@ export function createRenderer(canvas) {
         const f = new THREE.DirectionalLight(0x88aaff, 0.6); f.position.set(-5, 3, -4); thumbScene.add(f);
         thumbScene.add(new THREE.AmbientLight(0xffffff, 0.55));
     }
+    const _thumbBox = new THREE.Box3();
+    const _thumbCtr = new THREE.Vector3();
+    const _thumbSz = new THREE.Vector3();
     function renderUnitThumbnail(era, typeIndex, team) {
         const teamKey = team === 'enemy' ? 'enemy' : 'player';
         const cacheKey = `${era}_${typeIndex}_${teamKey}`;
@@ -752,10 +1229,20 @@ export function createRenderer(canvas) {
             const g = buildUnit(era, typeIndex, teamKey);
             // hide the hp bar sprite in the portrait
             if (g.userData.parts?.hp) g.userData.parts.hp.visible = false;
-            // center the unit at origin (drone floats, others stand on 0)
-            g.position.set(0, g.userData.parts?.hover ? -0.6 : 0, 0);
             g.rotation.y = -0.5; // 3/4 view
             thumbScene.add(g);
+            // Auto-frame: measure the unit and pull the camera back so bigger
+            // silhouettes (mech, tank, mammoth, catapult) fit and small
+            // humanoids fill the portrait.
+            _thumbBox.setFromObject(g);
+            _thumbBox.getCenter(_thumbCtr);
+            _thumbBox.getSize(_thumbSz);
+            const radius = Math.max(_thumbSz.x, _thumbSz.y, _thumbSz.z) * 0.5 || 2;
+            const dist = radius / Math.tan((thumbCam.fov * Math.PI / 180) / 2) * 1.35;
+            const dir = new THREE.Vector3(0.62, 0.5, 0.78).normalize();
+            thumbCam.position.copy(_thumbCtr).addScaledVector(dir, dist);
+            thumbCam.lookAt(_thumbCtr);
+            thumbCam.updateProjectionMatrix();
             thumbRenderer.render(thumbScene, thumbCam);
             url = thumbCanvas.toDataURL('image/png');
             thumbScene.remove(g);
@@ -798,35 +1285,98 @@ export function createRenderer(canvas) {
         }
     }
 
+    // Which sim `type` strings fight in melee (they should visibly lunge in).
+    const MELEE_TYPES = new Set(['melee', 'heavy_melee', 'shielded_melee']);
+    // Wheeled/heavy vehicles: no biped stride, just a chassis rumble.
+    function isVehicle(v) { return v.ti === 2 && v.era !== 4; }
+
+    // Capture rest poses (positions/rotations) so animation always returns to them.
+    function captureRest(v) {
+        const p = v.group.userData.parts;
+        if (p.body) v._bodyBaseY = p.body.position.y;
+        if (p.weapon) {
+            v._wRest = { x: p.weapon.position.x, y: p.weapon.position.y, z: p.weapon.position.z, rx: p.weapon.rotation.x, rz: p.weapon.rotation.z };
+        }
+    }
+
     function animateUnit(v, u, t) {
         const p = v.group.userData.parts;
+        const g = v.group;
         const hpRatio = Math.max(0, u.hp / u.maxHp);
         if (p.hp) drawHp(p.hp, hpRatio, v.teamKey);
+        if (!v._restCaptured) { captureRest(v); v._restCaptured = true; }
+
         if (u.state === 'die') {
             const dp = u.deathProgress || 0;
-            v.group.rotation.z = (u.facing > 0 ? 1 : -1) * Math.PI / 2 * dp;
-            v.group.position.y = -0.6 * dp * (p.hover ? 4 : 1);
-            v.group.traverse(o => { if (o.isMesh && o.material) { o.material.transparent = true; o.material.opacity = Math.max(0, 1 - dp); } });
+            g.rotation.z = (u.facing > 0 ? 1 : -1) * Math.PI / 2 * dp;
+            g.position.y = -0.6 * dp * (p.hover ? 4 : 1);
+            g.traverse(o => { if (o.isMesh && o.material) { o.material.transparent = true; o.material.opacity = Math.max(0, 1 - dp); } });
             return;
         }
+        if (g.rotation.z !== 0) g.rotation.z = 0;
+
         const walking = u.state === 'walk' && !u.isBlocked;
         const rate = 8 * (u.speed || 1);
         const ph = t * rate;
+        const veh = isVehicle(v);
+
+        // ---- vertical bob / hover / chassis rumble ----
         if (p.hover) {
-            v.group.position.y = 2.4 + Math.sin(t * 1.6) * 0.22;
-        } else {
-            if (p.body) p.body.position.y = (v.ti === 2 ? 1.4 : 1.55) + (walking ? Math.abs(Math.sin(ph)) * 0.12 : 0);
-            if (p.legL && p.legR && v.ti !== 2) {
-                const s = walking ? Math.sin(ph) * 0.5 : 0;
-                p.legL.rotation.x = s; p.legR.rotation.x = -s;
-            }
+            g.position.y = 2.4 + Math.sin(t * 1.6) * 0.22;
+        } else if (p.body) {
+            const bob = walking ? (veh ? Math.abs(Math.sin(ph)) * 0.05 : Math.abs(Math.sin(ph)) * 0.12) : 0;
+            p.body.position.y = v._bodyBaseY + bob;
         }
-        if (u.state === 'attack' && p.weapon) {
-            const swing = Math.sin(t * 14);
-            if (v.ti === 2 || v.ti === 1) p.weapon.position.x = (v.ti === 2 ? 1.4 : 0.9) + swing * 0.2;
-            else p.weapon.rotation.z = -0.5 + swing * 0.8;
-        } else if (p.weapon && v.ti === 0) {
-            p.weapon.rotation.z = -0.5;
+
+        // ---- leg / stride (bipeds + mammoth + mech; vehicles skip) ----
+        if (!p.hover && !veh && p.legL && p.legR) {
+            const s = walking ? Math.sin(ph) * 0.5 : 0;
+            p.legL.rotation.x = s; p.legR.rotation.x = -s;
+        }
+
+        // ---- MELEE LUNGE toward heading on the strike (clear punch/thrust) ----
+        const isMelee = MELEE_TYPES.has(u.type);
+        if (u.state === 'attack') {
+            if (v._lungePrev !== 'attack') v._lungeT = 0;
+            v._lungeT = (v._lungeT || 0) + 0.16;          // advance strike cycle
+            const cyc = v._lungeT % 1;
+            // fast thrust out over first 35%, ease back over remainder
+            const punch = cyc < 0.35 ? (cyc / 0.35) : 1 - ((cyc - 0.35) / 0.65);
+            const eased = punch * punch * (3 - 2 * punch); // smoothstep
+            v._lungeAmt = isMelee ? eased * (u.type === 'heavy_melee' ? 2.2 : 1.8) : -eased * 0.5;
+        } else {
+            v._lungeAmt = (v._lungeAmt || 0) * 0.6;
+            if (Math.abs(v._lungeAmt) < 0.01) v._lungeAmt = 0;
+        }
+        v._lungePrev = u.state;
+        if (v._lungeAmt) {
+            const hdg = g.rotation.y;   // heading set by syncUnits
+            g.position.x += Math.cos(hdg) * v._lungeAmt;
+            g.position.z += Math.sin(hdg) * v._lungeAmt;
+        }
+
+        // ---- weapon action ----
+        if (p.weapon && v._wRest) {
+            const w = p.weapon, r = v._wRest;
+            if (u.state === 'attack') {
+                if (isMelee) {
+                    // overhead/thrust swing on the weapon pivot
+                    const swing = Math.sin(v._lungeT * Math.PI * 2);
+                    w.rotation.z = r.rz - 0.9 - swing * 0.7;
+                } else if (v.era === 2 && v.ti === 2) {
+                    // Catapult: arm flings forward
+                    w.rotation.x = r.rx + Math.max(0, Math.sin(t * 8)) * 1.4;
+                } else if (veh) {
+                    // Tank/Chariot: barrel recoil kick along its axis
+                    w.position.z = r.z - Math.max(0, Math.sin(t * 18)) * 0.25;
+                } else {
+                    // ranged infantry / mech: small gun recoil
+                    w.position.z = r.z - Math.max(0, Math.sin(t * 22)) * 0.12;
+                }
+            } else {
+                // return to rest pose
+                w.rotation.z = r.rz; w.rotation.x = r.rx; w.position.z = r.z;
+            }
         }
     }
 
@@ -931,6 +1481,8 @@ export function createRenderer(canvas) {
         syncGates, stepParticles, setEra, resize, dispose,
         raycastGround, raycastUnits, projectToScreen, render,
         burst, floatText, laneOfHit,
-        showTowerGhost, hideTowerGhost, renderUnitThumbnail,
+        showTowerGhost, hideTowerGhost,
+        showAoeGhost, hideAoeGhost,
+        renderUnitThumbnail,
     };
 }
