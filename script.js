@@ -5,10 +5,12 @@
  */
 
 import {
-    VIRTUAL_WIDTH, VIRTUAL_HEIGHT, GROUND_Y, PLAYER_BASE_X, ENEMY_BASE_X, BASE_HP_MAX,
-    MIDLINE_X, TOWER_MARGIN, TOWER_MIN_SPACING,
-    LANE_BY_IDX, LANE_IDX, LANE_Z, LANE_Z_BY_IDX, LANE_HALF_WIDTH,
-    WORLD_Z_MIN, WORLD_Z_MAX, LANE_UNLOCK_COST, laneZOf, laneZ3, mapX, mapZ, S
+    MAP_SIZE, VIRTUAL_WIDTH, VIRTUAL_HEIGHT, GROUND_Y, BASE_HP_MAX,
+    PLAYER_CORNER, ENEMY_CORNER, PLAYER_BASE_X, ENEMY_BASE_X,
+    BASE_REACH, TOWER_MIN_SPACING, LANE_UNLOCK_COST,
+    LANE_BY_IDX, LANE_IDX,
+    laneLength, posAt, headingAt,
+    S, mirrorX, mirrorZ, mirrorLane
 } from './world.js';
 
 // ==========================================================================
@@ -348,7 +350,7 @@ const UNIT3_UNLOCK_COST = 50;   // the heavy unit (slot 3) must be unlocked firs
 // ==========================================================================
 
 class Particle {
-    constructor(x, y, color, type = 'spark', text = '', customSize = null, z = 450) {
+    constructor(x, y, color, type = 'spark', text = '', customSize = null, z = 900) {
         this.x = x;
         this.y = y;
         this.z = z;            // lane depth for the 3D FX bridge
@@ -461,7 +463,7 @@ class Tower {
 
             for (let enemy of enemies) {
                 if (enemy.state === 'die') continue;
-                const dist = Math.hypot(enemy.x - this.x, (enemy.z ?? 450) - this.z);
+                const dist = Math.hypot(enemy.x - this.x, (enemy.z ?? 0) - this.z);
                 if (dist < closestDist) {
                     closestDist = dist;
                     closestEnemy = enemy;
@@ -599,7 +601,9 @@ class Base {
     constructor(team) {
         this.team = team;
         this.hp = BASE_HP_MAX;
-        this.x = team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X;
+        const corner = team === 'player' ? PLAYER_CORNER : ENEMY_CORNER;
+        this.x = corner.x;
+        this.z = corner.z; // world depth of the base corner (projectiles aim here)
         this.y = GROUND_Y; // needed so projectiles aimed at the base get a valid target height
         this.width = 110;
         this.height = 320;
@@ -871,14 +875,14 @@ class Projectile {
         const enemies = this.team === 'player' ? game.enemyUnits : game.playerUnits;
         const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
 
-        // Base is a wall spanning all lanes -> distance measured on X only
-        if (Math.abs(enemyBase.x - this.x) < r) {
+        // Base sits at its corner (world x,z) -> radial distance
+        if (Math.hypot(enemyBase.x - this.x, (enemyBase.z ?? 0) - (this.z ?? 0)) < r) {
             enemyBase.takeDamage(Math.round(this.damage * 0.5));
         }
         for (let i = enemies.length - 1; i >= 0; i--) {
             const unit = enemies[i];
             if (unit.state === 'die') continue;
-            const dist = Math.hypot(unit.x - this.x, (unit.z ?? 450) - (this.z ?? 450));
+            const dist = Math.hypot(unit.x - this.x, (unit.z ?? 0) - (this.z ?? 0));
             if (dist < r) {
                 const falloff = 1 - (dist / r) * 0.4; // heavier damage near the epicenter
                 unit.takeDamage(Math.round(this.damage * falloff), game);
@@ -1047,12 +1051,14 @@ class Unit {
         
         // Spawning details
         this.y = GROUND_Y;
-        this.x = team === 'player' ? PLAYER_BASE_X + 30 : ENEMY_BASE_X - 30;
 
-        // Lane / depth (set properly by Game.addUnitFree)
+        // Lane / arc-length position (set properly by Game.addUnitFree).
+        // The unit advances by `dist` along its lane; world (x,z) is derived from posAt().
         this.lane = 'mid';
-        this.laneZ = LANE_Z.mid;
-        this.z = LANE_Z.mid;
+        this.dist = 0;         // arc-length from the player corner (0 .. laneLength)
+        this.heading = 0;      // render heading (radians about Y)
+        this.x = team === 'player' ? PLAYER_CORNER.x : ENEMY_CORNER.x;
+        this.z = team === 'player' ? PLAYER_CORNER.z : ENEMY_CORNER.z;
 
         this.attackTimer = 0;
         this.state = 'walk'; // 'walk', 'attack', 'die'
@@ -1092,7 +1098,8 @@ class Unit {
                 game.addGold(this.goldReward);
                 game.statsKilled++;
                 // Floating "+Xg" bounty so the player sees the reward for the kill
-                game.particles.push(new Particle(this.x, this.y - this.height - 12, '#fbbf24', 'text', `+${this.goldReward}g`, 15));
+                game.particles.push(new Particle(this.x, this.y - this.height - 12, '#fbbf24', 'text', `+${this.goldReward}g`, 15, this.z));
+                sfx('kill_gold', { throttle: 130, volume: 0.6 });
             } else {
                 game.awardEnemy(this.goldReward);
             }
@@ -1125,7 +1132,13 @@ class Unit {
             this.performAttack(dt, game);
         } else if (this.state === 'walk' && !this.isBlocked) {
             const speedScale = dt / 16.666;
-            this.x += this.speed * this.facing * speedScale;
+            const len = laneLength(this.lane);
+            this.dist += this.speed * this.facing * speedScale;
+            if (this.dist < 0) this.dist = 0;
+            else if (this.dist > len) this.dist = len;
+            const p = posAt(this.lane, this.dist);
+            this.x = p.x; this.z = p.z;
+            this.heading = headingAt(this.lane, this.dist, this.facing);
             this.animTimer += this.speed * 0.15 * speedScale;
         }
     }
@@ -1144,30 +1157,30 @@ class Unit {
         const teammates = this.team === 'player' ? game.playerUnits : game.enemyUnits;
         const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
         const range = this.getRange(game);
+        const len = laneLength(this.lane);
 
-        // 1. Check for nearest enemy unit
+        // 1. Check for nearest enemy unit AHEAD on the same lane (compared via arc-length dist)
         let closestEnemy = null;
         let closestEnemyDist = 99999;
-        
+
         for (let enemy of enemies) {
             if (enemy.state === 'die') continue;
             if (enemy.lane !== this.lane) continue; // combat is same-lane only
-            if (Math.abs((enemy.z ?? 450) - this.z) > LANE_HALF_WIDTH) continue;
 
-            // Check direction relative to team
-            const isAhead = this.team === 'player' ? (enemy.x > this.x) : (enemy.x < this.x);
+            // "Ahead" in the direction of travel: player advances up-dist, enemy down-dist
+            const isAhead = this.facing > 0 ? (enemy.dist > this.dist) : (enemy.dist < this.dist);
             if (isAhead) {
-                const dist = Math.abs(enemy.x - this.x) - (this.width / 2 + enemy.width / 2);
+                const dist = Math.abs(enemy.dist - this.dist) - (this.width / 2 + enemy.width / 2);
                 if (dist < closestEnemyDist) {
                     closestEnemyDist = dist;
                     closestEnemy = enemy;
                 }
             }
         }
-        
-        // 2. Check for Enemy Base
-        const baseDist = Math.abs(enemyBase.x - this.x) - (this.width / 2 + enemyBase.width / 2);
-        
+
+        // 2. Distance to the enemy base (arc-length from the lane's far end)
+        const baseDist = this.facing > 0 ? (len - this.dist - BASE_REACH) : (this.dist - BASE_REACH);
+
         // 3. Combat Decision
         if (closestEnemy && closestEnemyDist <= range) {
             this.state = 'attack';
@@ -1179,18 +1192,18 @@ class Unit {
             this.target = enemyBase;
             return;
         }
-        
-        // 4. Teammate spacing blocking
+
+        // 4. Teammate spacing blocking (same-lane, ahead, via dist)
         this.isBlocked = false;
         const teammateSpacingThreshold = 8;
-        
+
         for (let mate of teammates) {
             if (mate === this || mate.state === 'die') continue;
             if (mate.lane !== this.lane) continue; // only block same-lane teammates
 
-            const isAhead = this.team === 'player' ? (mate.x > this.x) : (mate.x < this.x);
+            const isAhead = this.facing > 0 ? (mate.dist > this.dist) : (mate.dist < this.dist);
             if (isAhead) {
-                const dist = Math.abs(mate.x - this.x) - (this.width / 2 + mate.width / 2);
+                const dist = Math.abs(mate.dist - this.dist) - (this.width / 2 + mate.width / 2);
                 if (dist < teammateSpacingThreshold) {
                     this.isBlocked = true;
                     this.state = 'walk'; // stay in walking animation frame, just stopped
@@ -1198,7 +1211,7 @@ class Unit {
                 }
             }
         }
-        
+
         // Default to walking
         this.state = 'walk';
         this.target = null;
@@ -1211,8 +1224,17 @@ class Unit {
             return;
         }
         
-        // Verify target is still within attack range (handles movement shifts)
-        const dist = Math.abs(this.target.x - this.x) - (this.width / 2 + this.target.width / 2);
+        // Verify target is still within attack range (handles movement shifts).
+        // Units compare via arc-length dist on the same lane; the base via lane-end reach.
+        let dist;
+        if (this.target instanceof Base) {
+            const len = laneLength(this.lane);
+            dist = this.facing > 0 ? (len - this.dist - BASE_REACH) : (this.dist - BASE_REACH);
+        } else if (this.target.lane === this.lane && typeof this.target.dist === 'number') {
+            dist = Math.abs(this.target.dist - this.dist) - (this.width / 2 + this.target.width / 2);
+        } else {
+            dist = Math.hypot(this.target.x - this.x, (this.target.z ?? 0) - (this.z ?? 0)) - (this.width / 2 + this.target.width / 2);
+        }
         if (dist > this.getRange(game) + 15) {
             this.state = 'walk';
             this.target = null;
@@ -1222,7 +1244,11 @@ class Unit {
         // Attack execution when timer finishes
         if (this.attackTimer <= 0) {
             this.attackTimer = this.attackCooldown;
-            
+
+            // Battle SFX (throttled globally so it's ambience, not a cacophony)
+            const melee = (this.type === 'melee' || this.type === 'heavy_melee' || this.type === 'shielded_melee');
+            sfx(melee ? 'attack_melee' : 'attack_ranged', { throttle: 110, volume: 0.5 });
+
             // Melee vs Ranged action
             if (this.type === 'melee' || this.type === 'heavy_melee' || this.type === 'shielded_melee') {
                 // Immediate damage to target
@@ -1882,13 +1908,14 @@ class SpecialAttack {
         this.timer = 0;
         this.duration = type === 'orbitallaser' ? 3000 : (type === 'airstrike' ? 2500 : 2000);
         this.isDead = false;
-        
-        // Scatter across the OPPONENT's half, spanning all lanes (z)
+
+        // Scatter world (x,z) points around the OPPONENT's corner region.
+        this.opp = team === 'player' ? ENEMY_CORNER : PLAYER_CORNER;
         this.projectilesToSpawn = [];
-        const xLo = team === 'player' ? ENEMY_BASE_X - 720 : PLAYER_BASE_X + 220;
-        const xHi = team === 'player' ? ENEMY_BASE_X - 220 : PLAYER_BASE_X + 720;
-        const rx = () => xLo + Math.random() * (xHi - xLo);
-        const rz = () => WORLD_Z_MIN + Math.random() * (WORLD_Z_MAX - WORLD_Z_MIN);
+        const SPREAD = 450;
+        const clamp = (v) => Math.max(60, Math.min(MAP_SIZE - 60, v));
+        const rx = () => clamp(this.opp.x + (Math.random() - 0.5) * 2 * SPREAD);
+        const rz = () => clamp(this.opp.z + (Math.random() - 0.5) * 2 * SPREAD);
 
         if (type === 'meteor') {
             for (let i = 0; i < 15; i++) this.projectilesToSpawn.push({ delay: i * 120, x: rx(), z: rz(), spawned: false });
@@ -1897,21 +1924,24 @@ class SpecialAttack {
         } else if (type === 'fireball') {
             for (let i = 0; i < 8; i++) this.projectilesToSpawn.push({ delay: i * 220, x: rx(), z: rz(), spawned: false });
         } else if (type === 'airstrike') {
-            // Carpet-bomb one random lane
-            this.laneZ = LANE_Z_BY_IDX[Math.floor(Math.random() * 3)];
+            // Carpet-bomb along a random lane, sweeping from the enemy corner backward.
+            const lanes = ['mid', 'top', 'bottom'];
+            this.airLane = lanes[Math.floor(Math.random() * lanes.length)];
+            const len = laneLength(this.airLane);
             for (let i = 0; i < 8; i++) {
-                this.projectilesToSpawn.push({
-                    delay: 500 + i * 200,
-                    x: team === 'player' ? (PLAYER_BASE_X + 300 + i * 140) : (ENEMY_BASE_X - 300 - i * 140),
-                    z: this.laneZ, spawned: false
-                });
+                // Sample points near the opponent's end of the chosen lane
+                const d = (team === 'player') ? (len - 120 - i * 130) : (120 + i * 130);
+                const p = posAt(this.airLane, Math.max(0, Math.min(len, d)));
+                this.projectilesToSpawn.push({ delay: 500 + i * 200, x: p.x, z: p.z, spawned: false });
             }
-            this.airstrikePlaneX = team === 'player' ? 0 : VIRTUAL_WIDTH;
-            this.x = this.airstrikePlaneX; this.z = this.laneZ;
+            // Plane flies in along the lane toward the opponent's corner.
+            const start = posAt(this.airLane, team === 'player' ? len * 0.35 : len * 0.65);
+            this.airT = 0;
+            this.x = start.x; this.z = start.z;
         } else if (type === 'orbitallaser') {
-            // Beam parked in enemy territory, sweeping across the lanes (z)
-            this.laserX = team === 'player' ? ENEMY_BASE_X - 420 : PLAYER_BASE_X + 420;
-            this.laserZ = WORLD_Z_MIN;
+            // Beam parked near the opponent corner, sweeping across a small region.
+            this.laserX = this.opp.x;
+            this.laserZ = this.opp.z - 300;
             this.x = this.laserX; this.z = this.laserZ;
         }
     }
@@ -1934,13 +1964,18 @@ class SpecialAttack {
         }
 
         if (this.type === 'airstrike') {
-            const planeSpeed = (VIRTUAL_WIDTH / (this.duration / 1000)) * (dt / 1000);
-            this.airstrikePlaneX += (this.team === 'player' ? planeSpeed : -planeSpeed);
-            this.x = this.airstrikePlaneX;
+            // Sweep the plane along the chosen lane toward the opponent's corner.
+            const len = laneLength(this.airLane);
+            this.airT = Math.min(1, this.airT + (dt / this.duration));
+            const from = this.team === 'player' ? 0.35 : 0.65;
+            const to = this.team === 'player' ? 0.95 : 0.05;
+            const d = (from + (to - from) * this.airT) * len;
+            const p = posAt(this.airLane, Math.max(0, Math.min(len, d)));
+            this.x = p.x; this.z = p.z;
         }
         else if (this.type === 'orbitallaser') {
-            // Sweep the beam across the lanes (z) at a fixed x
-            const sweep = ((WORLD_Z_MAX - WORLD_Z_MIN) / (this.duration / 1000)) * (dt / 1000);
+            // Sweep the beam across a region around the opponent corner (in z).
+            const sweep = (600 / (this.duration / 1000)) * (dt / 1000);
             this.laserZ += sweep;
             this.z = this.laserZ; this.x = this.laserX;
 
@@ -1948,17 +1983,17 @@ class SpecialAttack {
             const enemies = this.team === 'player' ? game.enemyUnits : game.playerUnits;
             const enemyBase = this.team === 'player' ? game.enemyBase : game.playerBase;
 
-            if (Math.abs(enemyBase.x - this.laserX) < laserRadius) {
+            if (Math.hypot(enemyBase.x - this.laserX, (enemyBase.z ?? 0) - this.laserZ) < laserRadius) {
                 enemyBase.takeDamage(Math.round(4 * this.dmgMult));
             }
             for (let unit of enemies) {
                 if (unit.state === 'die') continue;
-                if (Math.hypot(unit.x - this.laserX, (unit.z ?? 450) - this.laserZ) < laserRadius) {
+                if (Math.hypot(unit.x - this.laserX, (unit.z ?? 0) - this.laserZ) < laserRadius) {
                     unit.takeDamage(Math.round(8 * this.dmgMult), game);
                 }
             }
             if (Math.random() < 0.8) {
-                game.particles.push(new Particle(this.laserX + (Math.random() - 0.5) * 20, GROUND_Y, '#38bdf8', 'spark', '', 4));
+                game.particles.push(new Particle(this.laserX + (Math.random() - 0.5) * 20, GROUND_Y, '#38bdf8', 'spark', '', 4, this.laserZ));
             }
         }
     }
@@ -1983,7 +2018,7 @@ class SpecialAttack {
         
         if (this.type === 'airstrike') {
             // Draw plane flying overhead
-            const px = this.airstrikePlaneX - cameraX;
+            const px = (this.x ?? 0) - cameraX;
             ctx.fillStyle = '#1e3a8a';
             ctx.beginPath();
             // Wing outline
@@ -2061,6 +2096,9 @@ function hexToInt(str) {
 }
 
 function el(id) { return document.getElementById(id); }
+
+// Play a sound effect if the sound manager (sounds.js) is present.
+function sfx(name, opts) { if (window.Sfx) window.Sfx.play(name, opts); }
 
 class Game {
     constructor() {
@@ -2310,6 +2348,7 @@ class Game {
             if (this.gold < stats.cost) return false;
             this.gold -= stats.cost;
             this.statsSpawned++;
+            sfx('spawn', { throttle: 40 });
         } else {
             if (this.enemyGold < stats.cost) return false;
             this.enemyGold -= stats.cost;
@@ -2324,13 +2363,19 @@ class Game {
         const u = new Unit(tier, index, team, stats);
         u.id = this.nextUnitId++;
         u.lane = lane;
-        // deterministic ±20 spread within the lane so units don't perfectly overlap
-        u.zJitter = ((u.id * 53) % 41) - 20;
-        u.laneZ = laneZOf(lane) + u.zJitter;
-        u.z = u.laneZ;
+        u.facing = team === 'player' ? 1 : -1;
+        const len = laneLength(lane);
+        // deterministic ±15 jitter along the lane so units don't perfectly stack
+        const jitter = ((u.id * 53) % 31) - 15;
+        let d = team === 'player' ? (20 + jitter) : (len - 20 + jitter);
+        d = Math.max(0, Math.min(len, d));
+        u.dist = d;
+        const p = posAt(lane, d);
+        u.x = p.x; u.z = p.z;
+        u.heading = headingAt(lane, d, u.facing);
         (team === 'player' ? this.playerUnits : this.enemyUnits).push(u);
-        const gx = team === 'player' ? PLAYER_BASE_X + 30 : ENEMY_BASE_X - 30;
-        this.particles.push(new Particle(gx, GROUND_Y - 20, '#cbd5e1', 'smoke'));
+        const corner = team === 'player' ? PLAYER_CORNER : ENEMY_CORNER;
+        this.particles.push(new Particle(corner.x, GROUND_Y - 20, '#cbd5e1', 'smoke', '', null, corner.z));
         return u;
     }
 
@@ -2341,10 +2386,11 @@ class Game {
             if (this.gold < LANE_UNLOCK_COST) return;
             this.gold -= LANE_UNLOCK_COST;
             this.laneUnlocked.player[lane] = true;
-            const z = laneZOf(lane);
-            for (let i = 0; i < 20; i++) this.particles.push(new Particle(PLAYER_BASE_X + 90, GROUND_Y - 40 - Math.random() * 60, '#fbbf24', 'spark', '', 5));
-            this.particles.push(new Particle(PLAYER_BASE_X + 90, GROUND_Y - 60, '#fbbf24', 'text', lane.toUpperCase() + ' LANE OPEN!', 16));
+            const lp = posAt(lane, Math.min(120, laneLength(lane) * 0.15));
+            for (let i = 0; i < 20; i++) this.particles.push(new Particle(lp.x, GROUND_Y - 40 - Math.random() * 60, '#fbbf24', 'spark', '', 5, lp.z));
+            this.particles.push(new Particle(lp.x, GROUND_Y - 60, '#fbbf24', 'text', lane.toUpperCase() + ' LANE OPEN!', 16, lp.z));
             this.updateButtonsUI();
+            sfx('lane_unlock');
         } else {
             if (this.enemyGold < LANE_UNLOCK_COST) return;
             this.enemyGold -= LANE_UNLOCK_COST;
@@ -2358,8 +2404,9 @@ class Game {
             if (this.gold < UNIT3_UNLOCK_COST) return;
             this.gold -= UNIT3_UNLOCK_COST;
             this.playerUnit3Unlocked = true;
-            this.particles.push(new Particle(PLAYER_BASE_X + 30, GROUND_Y - 40, '#fbbf24', 'text', 'UNLOCKED!', 18));
+            this.particles.push(new Particle(PLAYER_CORNER.x, GROUND_Y - 40, '#fbbf24', 'text', 'UNLOCKED!', 18, PLAYER_CORNER.z));
             this.updateButtonsUI();
+            sfx('purchase');
         } else {
             if (this.enemyGold < UNIT3_UNLOCK_COST) return;
             this.enemyGold -= UNIT3_UNLOCK_COST;
@@ -2382,15 +2429,16 @@ class Game {
         }
         tiers[slot]++;
         this.recomputeEras();
-        const bx = team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X;
+        const corner = team === 'player' ? PLAYER_CORNER : ENEMY_CORNER;
+        const bx = corner.x, bz = corner.z;
         const col = team === 'player' ? '#a855f7' : '#ef4444';
         for (let i = 0; i < 24; i++) {
-            this.particles.push(new Particle(bx + (Math.random() - 0.5) * 50, GROUND_Y - 90 - Math.random() * 130, col, 'spark', '', 4));
+            this.particles.push(new Particle(bx + (Math.random() - 0.5) * 50, GROUND_Y - 90 - Math.random() * 130, col, 'spark', '', 4, bz));
         }
-        this.particles.push(new Particle(bx, GROUND_Y - 240, col, 'text', ERA_DATA[tiers[slot]].units[slot].name.toUpperCase() + "!", 18));
+        this.particles.push(new Particle(bx, GROUND_Y - 240, col, 'text', ERA_DATA[tiers[slot]].units[slot].name.toUpperCase() + "!", 18, bz));
         const base = team === 'player' ? this.playerBase : this.enemyBase;
         for (const t of base.towers) t.cooldownTimer = 0;
-        if (team === 'player') this.updateButtonsUI();
+        if (team === 'player') { this.updateButtonsUI(); sfx('evolve'); }
     }
 
     rangeBonus(team) {
@@ -2405,11 +2453,12 @@ class Game {
         if (timer > 0) return;
         const cfg = ERA_DATA[team === 'player' ? this.playerEra : this.enemyEra];
         this.specialAttacks.push(new SpecialAttack(cfg.specialType, team, SPECIAL_LEVEL_MULT[level]));
-        if (team === 'player') this.specialTimer = SPECIAL_COOLDOWN_MS;
+        if (team === 'player') { this.specialTimer = SPECIAL_COOLDOWN_MS; sfx('special'); }
         else this.enemySpecialTimer = SPECIAL_COOLDOWN_MS;
         const label = (team === 'enemy' ? "ENEMY " : "") + cfg.specialName.toUpperCase();
-        const cx = team === 'player' ? PLAYER_BASE_X + 320 : ENEMY_BASE_X - 320;
-        this.particles.push(new Particle(cx, 110, team === 'player' ? '#a855f7' : '#ef4444', 'text', label, 24));
+        // Announce over the opponent's corner (where the special will land)
+        const oc = team === 'player' ? ENEMY_CORNER : PLAYER_CORNER;
+        this.particles.push(new Particle(oc.x, 110, team === 'player' ? '#a855f7' : '#ef4444', 'text', label, 24, oc.z));
     }
 
     upgradeSpecial(team) {
@@ -2420,8 +2469,9 @@ class Game {
             if (this.gold < cost) return;
             this.gold -= cost;
             this.specialLevel++;
-            this.particles.push(new Particle(PLAYER_BASE_X + 320, 110, '#a855f7', 'text', 'SPECIAL Lv ' + this.specialLevel + '!', 22));
+            this.particles.push(new Particle(PLAYER_CORNER.x, 110, '#a855f7', 'text', 'SPECIAL Lv ' + this.specialLevel + '!', 22, PLAYER_CORNER.z));
             this.updateButtonsUI();
+            sfx('upgrade');
         } else {
             if (this.enemyGold < cost) return;
             this.enemyGold -= cost;
@@ -2437,8 +2487,9 @@ class Game {
             if (this.gold < cost) return;
             this.gold -= cost;
             this.rangeLevel++;
-            this.particles.push(new Particle(PLAYER_BASE_X + 30, GROUND_Y - 60, '#38bdf8', 'text', 'RANGE Lv ' + this.rangeLevel + '!', 20));
+            this.particles.push(new Particle(PLAYER_CORNER.x, GROUND_Y - 60, '#38bdf8', 'text', 'RANGE Lv ' + this.rangeLevel + '!', 20, PLAYER_CORNER.z));
             this.updateButtonsUI();
+            sfx('upgrade');
         } else {
             if (this.enemyGold < cost) return;
             this.enemyGold -= cost;
@@ -2458,19 +2509,22 @@ class Game {
             this.enemyGold -= cost;
         }
         base.unlockedSlots++;
-        this.particles.push(new Particle((team === 'player' ? PLAYER_BASE_X : ENEMY_BASE_X) + 35, GROUND_Y - 140, '#fbbf24', 'spark', '', 6));
-        if (team === 'player') this.updateButtonsUI();
+        const sc = team === 'player' ? PLAYER_CORNER : ENEMY_CORNER;
+        this.particles.push(new Particle(sc.x + 35, GROUND_Y - 140, '#fbbf24', 'spark', '', 6, sc.z));
+        if (team === 'player') { this.updateButtonsUI(); sfx('purchase'); }
     }
 
-    // Is (x,z) a legal tower spot for this team? (own half only, in bounds, spaced)
+    // Is (x,z) a legal tower spot for this team? Towers may be built ANYWHERE on the
+    // map (no half restriction) — just in-bounds, clear of both base corners, and spaced.
     towerSpotValid(team, x, z) {
         if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
-        if (z < WORLD_Z_MIN || z > WORLD_Z_MAX) return false;
-        // own half only
-        if (team === 'player' && x > MIDLINE_X - TOWER_MARGIN) return false;
-        if (team === 'enemy' && x < MIDLINE_X + TOWER_MARGIN) return false;
-        if (x < PLAYER_BASE_X + 40 || x > ENEMY_BASE_X - 40) return false;
+        // within map bounds with a margin
+        if (x < 120 || x > MAP_SIZE - 120 || z < 120 || z > MAP_SIZE - 120) return false;
+        // keep clear of either base corner
+        if (Math.hypot(x - PLAYER_CORNER.x, z - PLAYER_CORNER.z) < 120) return false;
+        if (Math.hypot(x - ENEMY_CORNER.x, z - ENEMY_CORNER.z) < 120) return false;
         const base = team === 'player' ? this.playerBase : this.enemyBase;
+        if (base.towers.length >= base.unlockedSlots) return false;
         for (const t of base.towers) {
             if (Math.hypot(t.x - x, t.z - z) < TOWER_MIN_SPACING) return false;
         }
@@ -2489,8 +2543,8 @@ class Game {
             this.enemyGold -= TOWER_BUILD_COST;
         }
         base.towers.push(new Tower(team, x, z));
-        for (let i = 0; i < 8; i++) this.particles.push(new Particle(x + (Math.random() - 0.5) * 20, GROUND_Y - 40 - Math.random() * 40, '#fbbf24', 'spark', '', 6));
-        if (team === 'player') this.updateButtonsUI();
+        for (let i = 0; i < 8; i++) this.particles.push(new Particle(x + (Math.random() - 0.5) * 20, GROUND_Y - 40 - Math.random() * 40, '#fbbf24', 'spark', '', 6, z));
+        if (team === 'player') { this.updateButtonsUI(); sfx('tower_build'); }
         return true;
     }
 
@@ -2552,16 +2606,17 @@ class Game {
     onGuestCommand(cmd) {
         if (this.mode !== 'host' || this.gameState !== 'running' || !cmd) return;
         switch (cmd.a) {
-            case 'spawn': this.trySpawn('enemy', cmd.i | 0, LANE_BY_IDX[cmd.l | 0] || 'mid'); break;
+            // Lane commands arrive in the GUEST's frame; mirror into the host's frame.
+            case 'spawn': this.trySpawn('enemy', cmd.i | 0, mirrorLane(LANE_BY_IDX[cmd.l | 0] || 'mid')); break;
             case 'unlock': this.unlockUnit3('enemy'); break;
-            case 'lane': this.unlockLane('enemy', LANE_BY_IDX[cmd.l | 0] || 'mid'); break;
+            case 'lane': this.unlockLane('enemy', mirrorLane(LANE_BY_IDX[cmd.l | 0] || 'mid')); break;
             case 'evolveu': this.evolveUnit('enemy', cmd.i | 0); break;
             case 'special': this.triggerSpecial('enemy'); break;
             case 'slot': this.buyTowerSlot('enemy'); break;
             case 'tower': {
-                // guest sends its own (mirrored) coords -> un-mirror to host space, then validate
-                const hx = VIRTUAL_WIDTH - (cmd.x | 0);
-                const hz = cmd.z | 0;
+                // guest sends its own (mirrored) coords -> un-mirror x AND z to host space
+                const hx = mirrorX(cmd.x | 0);
+                const hz = mirrorZ(cmd.z | 0);
                 this.buildTower('enemy', hx, hz);
                 break;
             }
@@ -2575,68 +2630,98 @@ class Game {
     // ----------------------------------------------------------------------
 
     updateButtonsUI() {
-        // Per-unit spawn + evolve cards
+        // Small helpers that no-op when an element is absent (index.html may lag)
+        const setText = (id, txt) => { const e = el(id); if (e) e.innerText = txt; };
+        const setImg = (id, tier, slot, team) => {
+            const e = el(id);
+            if (e && this.r3d && typeof this.r3d.renderUnitThumbnail === 'function') {
+                try { e.src = this.r3d.renderUnitThumbnail(tier, slot, team); } catch (err) {}
+            }
+        };
+
+        // Per-unit MOBA spawn cards + evolve buttons
         for (let i = 0; i < 3; i++) {
+            const n = i + 1;
             const tier = this.playerUnitTier[i];
             const unit = ERA_DATA[tier].units[i];
-            const spawnBtn = el(`spawn-u${i + 1}`);
-            const evoBtn = el(`evolve-u${i + 1}`);
-            const evoStats = el(`evo-stats-${i + 1}`);
-
-            // Current stats of the unit you'd spawn right now
-            el(`unit-stats-${i + 1}`).innerText = `HP ${unit.hp} · ATK ${unit.damage} · SPD ${unit.speed}`;
+            const spawnBtn = el(`spawn-u${n}`);
+            const evoBtn = el(`evolve-u${n}`);
 
             if (i === 2 && !this.playerUnit3Unlocked) {
-                // Heavy unit still locked — spawn button becomes the unlock button
-                spawnBtn.querySelector(".unit-name").innerText = unit.name;
-                spawnBtn.querySelector(".unit-cost").innerText = `🔒 Unlock ${UNIT3_UNLOCK_COST}g`;
-                spawnBtn.classList.add("locked-unit");
-                evoBtn.disabled = true;
-                evoBtn.querySelector(".evo-label").innerText = "Locked";
-                evoBtn.querySelector(".evo-cost").innerText = "";
-                evoStats.innerText = "Unlock the unit first";
+                // Heavy unit still locked — card shows the unlock cost + a locked portrait
+                setText(`unit-name-${n}`, unit.name);
+                setText(`unit-tier-${n}`, `T${tier + 1}`);
+                setText(`unit-cost-${n}`, `🔒 ${UNIT3_UNLOCK_COST}g`);
+                setText(`ustat-hp-${n}`, unit.hp);
+                setText(`ustat-atk-${n}`, unit.damage);
+                setText(`ustat-spd-${n}`, unit.speed);
+                setImg(`unit-img-${n}`, tier, i, 'player');
+                if (spawnBtn) spawnBtn.classList.add("locked-unit");
+                if (evoBtn) {
+                    evoBtn.disabled = true;
+                    setText(`evo-label-${n}`, "Locked");
+                    setText(`evo-cost-${n}`, "");
+                }
+                setText(`evo-hp-${n}`, "—");
+                setText(`evo-atk-${n}`, "—");
+                setText(`evo-spd-${n}`, "—");
                 continue;
             }
-            spawnBtn.classList.remove("locked-unit");
-            spawnBtn.querySelector(".unit-name").innerText = `${unit.name} · T${tier + 1}`;
-            spawnBtn.querySelector(".unit-cost").innerText = `${unit.cost}g`;
+
+            if (spawnBtn) spawnBtn.classList.remove("locked-unit");
+            setText(`unit-name-${n}`, unit.name);
+            setText(`unit-tier-${n}`, `T${tier + 1}`);
+            setText(`unit-cost-${n}`, `${unit.cost}g`);
+            setText(`ustat-hp-${n}`, unit.hp);
+            setText(`ustat-atk-${n}`, unit.damage);
+            setText(`ustat-spd-${n}`, unit.speed);
+            setImg(`unit-img-${n}`, tier, i, 'player');
 
             if (tier >= 4) {
-                evoBtn.disabled = true;
-                evoBtn.querySelector(".evo-label").innerText = "MAX TIER";
-                evoBtn.querySelector(".evo-cost").innerText = "";
-                evoStats.innerText = `HP ${unit.hp} · ATK ${unit.damage} · SPD ${unit.speed}`;
+                if (evoBtn) evoBtn.disabled = true;
+                setText(`evo-label-${n}`, "MAX");
+                setText(`evo-cost-${n}`, "");
+                setText(`evo-hp-${n}`, unit.hp);
+                setText(`evo-atk-${n}`, unit.damage);
+                setText(`evo-spd-${n}`, unit.speed);
+                setImg(`evo-img-${n}`, tier, i, 'player');
             } else {
                 const next = ERA_DATA[tier + 1].units[i];
-                evoBtn.disabled = false;
-                evoBtn.querySelector(".evo-label").innerText = `▲ ${next.name}`;
-                evoBtn.querySelector(".evo-cost").innerText = `${this.unitEvolveCost(i, tier)}g`;
-                evoStats.innerText = `HP ${next.hp} · ATK ${next.damage} · SPD ${next.speed}`;
+                if (evoBtn) evoBtn.disabled = false;
+                setText(`evo-label-${n}`, `▲ ${next.name}`);
+                setText(`evo-cost-${n}`, `${this.unitEvolveCost(i, tier)}g`);
+                setText(`evo-hp-${n}`, next.hp);
+                setText(`evo-atk-${n}`, next.damage);
+                setText(`evo-spd-${n}`, next.speed);
+                setImg(`evo-img-${n}`, tier + 1, i, 'player');
             }
         }
+
+        // Guarded label setter for .tower-label spans inside control buttons
+        const setLabel = (btn, txt) => { if (btn) { const l = btn.querySelector(".tower-label"); if (l) l.innerText = txt; } };
 
         const slotBtn = el("buy-tower-slot");
         const slotCostLabel = el("tower-slot-cost");
         if (this.playerBase.unlockedSlots < 3) {
-            slotBtn.disabled = false;
-            slotCostLabel.innerText = `${TOWER_SLOT_COSTS[this.playerBase.unlockedSlots]}g`;
-            slotBtn.querySelector(".tower-label").innerText = `Slot ${this.playerBase.unlockedSlots + 1}`;
+            if (slotBtn) slotBtn.disabled = false;
+            if (slotCostLabel) slotCostLabel.innerText = `${TOWER_SLOT_COSTS[this.playerBase.unlockedSlots]}g`;
+            setLabel(slotBtn, `Slot ${this.playerBase.unlockedSlots + 1}`);
         } else {
-            slotBtn.disabled = true;
-            slotCostLabel.innerText = "MAX";
-            slotBtn.querySelector(".tower-label").innerText = "Slots Locked";
+            if (slotBtn) slotBtn.disabled = true;
+            if (slotCostLabel) slotCostLabel.innerText = "MAX";
+            setLabel(slotBtn, "Slots Locked");
         }
 
         const towerBtn = el("buy-tower");
         const towerCostLabel = el("tower-cost");
         if (this.playerBase.towers.length < this.playerBase.unlockedSlots) {
-            towerBtn.disabled = false;
-            towerCostLabel.innerText = `${TOWER_BUILD_COST}g`;
-            towerBtn.querySelector(".tower-label").innerText = "Build Tower";
+            if (towerBtn) towerBtn.disabled = false;
+            if (towerCostLabel) towerCostLabel.innerText = `${TOWER_BUILD_COST}g`;
+            setLabel(towerBtn, "Build Tower");
         } else {
-            towerBtn.disabled = true;
-            towerCostLabel.innerText = "MAX";
-            towerBtn.querySelector(".tower-label").innerText = (this.playerBase.unlockedSlots === 0) ? "Unlock Slot First" : "Slots Full";
+            if (towerBtn) towerBtn.disabled = true;
+            if (towerCostLabel) towerCostLabel.innerText = "MAX";
+            setLabel(towerBtn, (this.playerBase.unlockedSlots === 0) ? "Unlock Slot First" : "Slots Full");
         }
 
         // Range upgrade button (with next-level reach preview)
@@ -2644,15 +2729,15 @@ class Game {
         const rCost = el("range-cost");
         const rStat = el("range-stat");
         if (this.rangeLevel >= MAX_RANGE_LEVEL) {
-            rBtn.disabled = true;
-            rBtn.querySelector(".tower-label").innerText = "Range MAX";
-            rCost.innerText = "MAX";
-            rStat.innerText = `Reach +${this.rangeLevel * RANGE_BONUS_PER_LEVEL}`;
+            if (rBtn) rBtn.disabled = true;
+            setLabel(rBtn, "Range MAX");
+            if (rCost) rCost.innerText = "MAX";
+            if (rStat) rStat.innerText = `Reach +${this.rangeLevel * RANGE_BONUS_PER_LEVEL}`;
         } else {
-            rBtn.disabled = false;
-            rBtn.querySelector(".tower-label").innerText = `Range → Lv ${this.rangeLevel + 1}`;
-            rCost.innerText = `${RANGE_UPGRADE_COSTS[this.rangeLevel]}g`;
-            rStat.innerText = `Reach +${(this.rangeLevel + 1) * RANGE_BONUS_PER_LEVEL} px`;
+            if (rBtn) rBtn.disabled = false;
+            setLabel(rBtn, `Range → Lv ${this.rangeLevel + 1}`);
+            if (rCost) rCost.innerText = `${RANGE_UPGRADE_COSTS[this.rangeLevel]}g`;
+            if (rStat) rStat.innerText = `Reach +${(this.rangeLevel + 1) * RANGE_BONUS_PER_LEVEL} px`;
         }
 
         // Special buy/upgrade button (with next-level power preview)
@@ -2660,15 +2745,15 @@ class Game {
         const sCost = el("special-upg-cost");
         const sStat = el("special-stat");
         if (this.specialLevel >= MAX_SPECIAL_LEVEL) {
-            sBtn.disabled = true;
-            sBtn.querySelector(".tower-label").innerText = "Special MAX";
-            sCost.innerText = "MAX";
-            sStat.innerText = `Power ×${SPECIAL_LEVEL_MULT[this.specialLevel]}`;
+            if (sBtn) sBtn.disabled = true;
+            setLabel(sBtn, "Special MAX");
+            if (sCost) sCost.innerText = "MAX";
+            if (sStat) sStat.innerText = `Power ×${SPECIAL_LEVEL_MULT[this.specialLevel]}`;
         } else {
-            sBtn.disabled = false;
-            sBtn.querySelector(".tower-label").innerText = this.specialLevel === 0 ? "Buy Special" : `Special → Lv ${this.specialLevel + 1}`;
-            sCost.innerText = `${SPECIAL_UPGRADE_COSTS[this.specialLevel]}g`;
-            sStat.innerText = `Power ×${SPECIAL_LEVEL_MULT[this.specialLevel + 1]}`;
+            if (sBtn) sBtn.disabled = false;
+            setLabel(sBtn, this.specialLevel === 0 ? "Buy Special" : `Special → Lv ${this.specialLevel + 1}`);
+            if (sCost) sCost.innerText = `${SPECIAL_UPGRADE_COSTS[this.specialLevel]}g`;
+            if (sStat) sStat.innerText = `Power ×${SPECIAL_LEVEL_MULT[this.specialLevel + 1]}`;
         }
 
         // Lane HUD pills
@@ -2688,21 +2773,26 @@ class Game {
             const tier = this.playerUnitTier[i];
             const spawnBtn = el(`spawn-u${i + 1}`);
             const evoBtn = el(`evolve-u${i + 1}`);
+            if (!spawnBtn && !evoBtn) continue;
             if (i === 2 && !this.playerUnit3Unlocked) {
                 // Spawn button = unlock; evolve stays disabled
-                spawnBtn.classList.toggle("disabled", this.gold < UNIT3_UNLOCK_COST);
-                evoBtn.classList.add("disabled");
+                if (spawnBtn) spawnBtn.classList.toggle("disabled", this.gold < UNIT3_UNLOCK_COST);
+                if (evoBtn) evoBtn.classList.add("disabled");
                 continue;
             }
-            spawnBtn.classList.toggle("disabled", this.gold < ERA_DATA[tier].units[i].cost);
-            if (tier >= 4) evoBtn.classList.add("disabled");
-            else evoBtn.classList.toggle("disabled", this.gold < this.unitEvolveCost(i, tier));
+            if (spawnBtn) spawnBtn.classList.toggle("disabled", this.gold < ERA_DATA[tier].units[i].cost);
+            if (evoBtn) {
+                if (tier >= 4) evoBtn.classList.add("disabled");
+                else evoBtn.classList.toggle("disabled", this.gold < this.unitEvolveCost(i, tier));
+            }
         }
         // Upgrade buttons grey out when unaffordable (but not when already maxed)
         const rMax = this.rangeLevel >= MAX_RANGE_LEVEL;
-        el("upgrade-range").classList.toggle("disabled", !rMax && this.gold < RANGE_UPGRADE_COSTS[this.rangeLevel]);
+        const rEl = el("upgrade-range");
+        if (rEl) rEl.classList.toggle("disabled", !rMax && this.gold < RANGE_UPGRADE_COSTS[this.rangeLevel]);
         const sMax = this.specialLevel >= MAX_SPECIAL_LEVEL;
-        el("upgrade-special").classList.toggle("disabled", !sMax && this.gold < SPECIAL_UPGRADE_COSTS[this.specialLevel]);
+        const sEl = el("upgrade-special");
+        if (sEl) sEl.classList.toggle("disabled", !sMax && this.gold < SPECIAL_UPGRADE_COSTS[this.specialLevel]);
     }
 
     updateSpecialUI() {
@@ -2768,15 +2858,23 @@ class Game {
         if (!this.laneUnlocked.enemy.top && this.timeElapsed > 60) this.laneUnlocked.enemy.top = true;
         if (!this.laneUnlocked.enemy.bottom && this.timeElapsed > 150) this.laneUnlocked.enemy.bottom = true;
 
-        // AI builds towers on its own half (radial), a few over time
+        // AI builds a few towers over time at valid spots anywhere (near the enemy
+        // corner / along its lanes), sampling until it finds a legal spot.
         if (this.enemyBase.unlockedSlots < 3 && this.timeElapsed > (this.enemyBase.unlockedSlots * 120 + 60)) {
             this.enemyBase.unlockedSlots++;
         }
         if (this.enemyBase.towers.length < this.enemyBase.unlockedSlots) {
-            const laneIdx = this.enemyBase.towers.length % 3;
-            const tz = LANE_Z_BY_IDX[laneIdx];
-            const tx = ENEMY_BASE_X - 180 - this.enemyBase.towers.length * 40;
-            if (this.towerSpotValid('enemy', tx, tz)) this.enemyBase.towers.push(new Tower('enemy', tx, tz));
+            const lanes = ['mid', 'top', 'bottom'];
+            for (let attempt = 0; attempt < 6; attempt++) {
+                const lane = lanes[Math.floor(Math.random() * lanes.length)];
+                const len = laneLength(lane);
+                // Somewhere on the enemy's side of the lane (defensive positions)
+                const d = len * (0.55 + Math.random() * 0.35);
+                const p = posAt(lane, Math.max(0, Math.min(len, d)));
+                const tx = p.x + (Math.random() - 0.5) * 120;
+                const tz = p.z + (Math.random() - 0.5) * 120;
+                if (this.towerSpotValid('enemy', tx, tz)) { this.enemyBase.towers.push(new Tower('enemy', tx, tz)); break; }
+            }
         }
 
         this.enemyAiTimer -= dt;
@@ -2898,17 +2996,18 @@ class Game {
     // ----------------------------------------------------------------------
 
     broadcastSnapshot() {
+        const hround = (h) => { const v = Math.round((h || 0) * 100) / 100; return Number.isFinite(v) ? v : 0; };
         const u = [];
-        for (const un of this.playerUnits) u.push([un.id, 'p', un.era, un.typeIndex, safeInt(un.x), safeInt(un.z), LANE_IDX[un.lane] || 0, safeInt(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
-        for (const un of this.enemyUnits) u.push([un.id, 'e', un.era, un.typeIndex, safeInt(un.x), safeInt(un.z), LANE_IDX[un.lane] || 0, safeInt(un.hp), un.state, un.facing, +un.deathProgress.toFixed(2)]);
+        for (const un of this.playerUnits) u.push([un.id, 'p', un.era, un.typeIndex, safeInt(un.x), safeInt(un.z), LANE_IDX[un.lane] || 0, safeInt(un.hp), un.state, un.facing, hround(un.heading), +un.deathProgress.toFixed(2)]);
+        for (const un of this.enemyUnits) u.push([un.id, 'e', un.era, un.typeIndex, safeInt(un.x), safeInt(un.z), LANE_IDX[un.lane] || 0, safeInt(un.hp), un.state, un.facing, hround(un.heading), +un.deathProgress.toFixed(2)]);
 
         const p = [];
-        for (const pr of this.projectiles) p.push([safeInt(pr.x), safeInt(pr.y), safeInt(pr.z ?? 450), pr.type, pr.team]);
+        for (const pr of this.projectiles) p.push([safeInt(pr.x), safeInt(pr.y), safeInt(pr.z ?? 0), pr.type, pr.team]);
 
         const s = [];
         for (const sa of this.specialAttacks) {
-            if (sa.type === 'airstrike') s.push(['airstrike', sa.team, safeInt(sa.x ?? sa.airstrikePlaneX), safeInt(sa.z ?? 450)]);
-            else if (sa.type === 'orbitallaser') s.push(['orbitallaser', sa.team, safeInt(sa.x ?? sa.laserX), safeInt(sa.z ?? sa.laserZ ?? 450)]);
+            if (sa.type === 'airstrike') s.push(['airstrike', sa.team, safeInt(sa.x ?? 0), safeInt(sa.z ?? 0)]);
+            else if (sa.type === 'orbitallaser') s.push(['orbitallaser', sa.team, safeInt(sa.x ?? sa.laserX ?? 0), safeInt(sa.z ?? sa.laserZ ?? 0)]);
         }
 
         const tw = [];
@@ -2958,11 +3057,23 @@ class Game {
         this.playerUnit3Unlocked = !!snap.eu3;
         this.enemyUnit3Unlocked = !!snap.pu3;
 
-        // Lanes: guest's own = enemy fields (elu); opponent = plu
+        // Lanes: guest's own = enemy fields (elu); opponent = plu. Because top/bottom
+        // swap under the 180° rotation, map each lane through mirrorLane so the guest's
+        // TOP corresponds to the host's BOTTOM (and vice versa).
         const elu = snap.elu || [true, false, false];
         const plu = snap.plu || [true, false, false];
-        this.laneUnlocked.player = { mid: !!elu[0], top: !!elu[1], bottom: !!elu[2] };
-        this.laneUnlocked.enemy = { mid: !!plu[0], top: !!plu[1], bottom: !!plu[2] };
+        const eluByName = { mid: !!elu[0], top: !!elu[1], bottom: !!elu[2] };
+        const pluByName = { mid: !!plu[0], top: !!plu[1], bottom: !!plu[2] };
+        this.laneUnlocked.player = {
+            mid: eluByName[mirrorLane('mid')],
+            top: eluByName[mirrorLane('top')],
+            bottom: eluByName[mirrorLane('bottom')]
+        };
+        this.laneUnlocked.enemy = {
+            mid: pluByName[mirrorLane('mid')],
+            top: pluByName[mirrorLane('top')],
+            bottom: pluByName[mirrorLane('bottom')]
+        };
 
         // Guest's own end-of-match stats (tracked authoritatively by the host)
         this.statsSpawned = snap.es || 0;
@@ -2974,13 +3085,13 @@ class Game {
         this.playerBase.unlockedSlots = snap.eus;
         this.enemyBase.unlockedSlots = snap.pus;
 
-        // Towers rebuilt from tw[] (mirror x, keep z). guest own = host 'e' towers.
+        // Towers rebuilt from tw[] (180° rotation: mirror x AND z). guest own = host 'e'.
         this.playerBase.towers = [];
         this.enemyBase.towers = [];
         for (const arr of (snap.tw || [])) {
             const [tc, tx, tz] = arr;
             const gTeam = tc === 'e' ? 'player' : 'enemy';
-            const tw = new Tower(gTeam, VIRTUAL_WIDTH - tx, tz);
+            const tw = new Tower(gTeam, mirrorX(tx), mirrorZ(tz));
             (gTeam === 'player' ? this.playerBase : this.enemyBase).towers.push(tw);
         }
 
@@ -2993,21 +3104,22 @@ class Game {
         el("current-era-text").innerText = ERA_DATA[this.playerEra].name;
         this.updateButtonsUI();
 
-        // Units — mirror x into guest-space, keep z + lane
+        // Units — 180° rotation: mirror x AND z, swap lane top<->bottom, rotate heading.
         const seen = new Set();
         for (const arr of snap.u) {
-            const [id, team, era, ti, x, z, laneIdx, hp, st, f] = arr;
+            const [id, team, era, ti, x, z, laneIdx, hp, st, f, heading] = arr;
             seen.add(id);
             const gTeam = team === 'e' ? 'player' : 'enemy'; // guest's own units are host's 'enemy'
-            const gx = VIRTUAL_WIDTH - x;
-            const gz = z;
+            const gx = mirrorX(x);
+            const gz = mirrorZ(z);
             const gf = -f;
-            const gLane = LANE_BY_IDX[laneIdx] || 'mid';
+            const gLane = mirrorLane(LANE_BY_IDX[laneIdx] || 'mid');
+            const gHeading = (heading || 0) + Math.PI;
             let nu = this.netUnits.get(id);
             if (!nu) {
                 const stats = ERA_DATA[era].units[ti];
                 const unit = new Unit(era, ti, gTeam, stats);
-                unit.id = id; unit.x = gx; unit.z = gz; unit.lane = gLane; unit.facing = gf;
+                unit.id = id; unit.x = gx; unit.z = gz; unit.lane = gLane; unit.facing = gf; unit.heading = gHeading;
                 nu = { unit, tx: gx, tz: gz };
                 this.netUnits.set(id, nu);
             }
@@ -3018,7 +3130,7 @@ class Game {
                 if (gTeam === 'enemy') this.spawnBountyFx(gx, unit.height, era, ti, gz);
             }
             unit.era = era; unit.typeIndex = ti; unit.team = gTeam; unit.lane = gLane;
-            unit.hp = hp; unit.state = st; unit.facing = gf;
+            unit.hp = hp; unit.state = st; unit.facing = gf; unit.heading = gHeading;
             nu.tx = gx; nu.tz = gz;
             if (st === 'die') nu.remove = true;
         }
@@ -3033,12 +3145,12 @@ class Game {
             }
         }
 
-        // Projectiles / specials — mirror x, keep z
+        // Projectiles / specials — 180° rotation: mirror x AND z, swap team
         this.netProjectiles = (snap.p || []).map(([x, y, z, type, team]) => ({
-            x: VIRTUAL_WIDTH - x, y, z, type, team: team === 'player' ? 'enemy' : 'player'
+            x: mirrorX(x), y, z: mirrorZ(z), type, team: team === 'player' ? 'enemy' : 'player'
         }));
         this.netSpecials = (snap.s || []).map(([type, team, x, z]) => ({
-            type, team: team === 'player' ? 'enemy' : 'player', x: VIRTUAL_WIDTH - x, z
+            type, team: team === 'player' ? 'enemy' : 'player', x: mirrorX(x), z: mirrorZ(z)
         }));
 
         // End of match (host-authoritative result)
@@ -3049,19 +3161,14 @@ class Game {
         }
     }
 
-    setTowerCount(base, team, count) {
-        while (base.towers.length < count) base.towers.push(new Tower(team, base.towers.length));
-        while (base.towers.length > count) base.towers.pop();
-    }
-
-    spawnHitFx(x, height, z = 450) {
+    spawnHitFx(x, height, z = 0) {
         this.particles.push(new Particle(x + (Math.random() - 0.5) * 10, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood', '', null, z));
     }
-    spawnDeathFx(x, height, z = 450) {
+    spawnDeathFx(x, height, z = 0) {
         for (let i = 0; i < 4; i++) this.particles.push(new Particle(x + (Math.random() - 0.5) * 12, GROUND_Y - (height || 40) / 2, '#dc2626', 'blood', '', null, z));
         this.particles.push(new Particle(x, GROUND_Y - 20, '#cbd5e1', 'smoke', '', null, z));
     }
-    spawnBountyFx(x, height, era, ti, z = 450) {
+    spawnBountyFx(x, height, era, ti, z = 0) {
         const reward = (ERA_DATA[era] && ERA_DATA[era].units[ti] || {}).goldReward || 0;
         this.particles.push(new Particle(x, GROUND_Y - (height || 40) - 12, '#fbbf24', 'text', `+${reward}g`, 15, z));
     }
@@ -3098,13 +3205,13 @@ class Game {
             if (p._fx) continue;
             p._fx = true;
             if (p.type === 'text') {
-                r.floatText(p.x, p.z ?? 450, p.text, p.color, false);
+                r.floatText(p.x, p.z ?? 900, p.text, p.color, false);
             } else if (p.type === 'blood') {
-                r.burst(p.x, p.z ?? 450, 0xdc2626, 3, false);
+                r.burst(p.x, p.z ?? 900, 0xdc2626, 3, false);
             } else if (p.type === 'fire') {
-                r.burst(p.x, p.z ?? 450, 0xf97316, 2, false);
+                r.burst(p.x, p.z ?? 900, 0xf97316, 2, false);
             } else if (p.type === 'spark') {
-                r.burst(p.x, p.z ?? 450, hexToInt(p.color), 2, false);
+                r.burst(p.x, p.z ?? 900, hexToInt(p.color), 2, false);
             }
         }
     }
@@ -3163,6 +3270,8 @@ class Game {
             this.r3d = mod.createRenderer(this.canvas);
             this.interaction = new Interaction(this);
             this.r3d.resize();
+            // Now that the renderer exists, populate unit-card portraits.
+            this.updateButtonsUI();
         } catch (e) {
             console.error('3D renderer failed to load', e);
             alert('This game needs WebGL. Please use a modern browser with hardware acceleration enabled.');
@@ -3183,6 +3292,7 @@ class Game {
     }
 
     showGameOver(isVictory, isOnline) {
+        sfx(isVictory ? 'victory' : 'defeat');
         // Don't leave a frozen networked battlefield rendering behind the modal.
         this.netUnits.clear();
         this.netProjectiles = [];
@@ -3524,7 +3634,10 @@ class Interaction {
         this.canvas.addEventListener('pointerdown', (e) => this._canvasDown(e));
         this.canvas.addEventListener('contextmenu', (e) => { if (this.mode === 'tower') { e.preventDefault(); this.cancel(); } });
         window.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.cancel(); });
-        this.canvas.addEventListener('pointermove', (e) => { this._hover = { x: e.clientX, y: e.clientY }; });
+        this.canvas.addEventListener('pointermove', (e) => {
+            this._hover = { x: e.clientX, y: e.clientY };
+            if (this.mode === 'tower') this._towerGhost(e.clientX, e.clientY);
+        });
         this.canvas.addEventListener('pointerleave', () => { this._hover = null; this.game.hideTip(); });
     }
 
@@ -3538,6 +3651,7 @@ class Interaction {
         if (g.gold < cost) {
             const b = el('spawn-u' + (index + 1));
             b.classList.add('shake'); setTimeout(() => b.classList.remove('shake'), 300);
+            sfx('error', { volume: 0.5 });
             return;
         }
         e.preventDefault();
@@ -3545,7 +3659,17 @@ class Interaction {
         this.dragIndex = index;
         this.dragMoved = false;
         if (this.r3d.controls) this.r3d.controls.enabled = false;
-        if (this.ghost) { this.ghost.classList.remove('hidden'); this.ghost.innerText = 'Drop on a lane: ' + ERA_DATA[tier].units[index].name; }
+        if (this.ghost) {
+            this.ghost.classList.remove('hidden');
+            const unitName = ERA_DATA[tier].units[index].name;
+            if (this.r3d && typeof this.r3d.renderUnitThumbnail === 'function') {
+                let src = '';
+                try { src = this.r3d.renderUnitThumbnail(tier, index, 'player'); } catch (err) {}
+                this.ghost.innerHTML = `<img src="${src}"><span>${unitName}</span>`;
+            } else {
+                this.ghost.innerText = 'Drop on a lane: ' + unitName;
+            }
+        }
         this._moveGhost(e.clientX, e.clientY);
     }
 
@@ -3600,15 +3724,30 @@ class Interaction {
         g.updateButtonsUI();
     }
 
+    // Live tower placement preview — show a range ring + validity at the cursor.
+    _towerGhost(clientX, clientY) {
+        const g = this.game;
+        const r = this.r3d;
+        if (!r || typeof r.raycastGround !== 'function' || typeof r.showTowerGhost !== 'function') return;
+        const pt = r.raycastGround(clientX, clientY);
+        if (!pt) { if (typeof r.hideTowerGhost === 'function') r.hideTowerGhost(); return; }
+        const simX = pt.x / S + 900;
+        const simZ = pt.z / S + 900;
+        const range = ERA_DATA[g.playerEra].towerRange;
+        const valid = g.towerSpotValid('player', simX, simZ) && g.gold >= TOWER_BUILD_COST;
+        r.showTowerGhost(simX, simZ, range, valid);
+    }
+
     _canvasDown(e) {
         if (this.mode !== 'tower') return;
         if (e.button === 2) { this.cancel(); return; }
         const pt = this.r3d.raycastGround(e.clientX, e.clientY);
         if (!pt) return;
         const simX = pt.x / S + 900;
-        const simZ = pt.z / S + 450;
+        const simZ = pt.z / S + 900;
         const g = this.game;
         if (g.playerBuildTower(simX, simZ)) {
+            if (g.r3d && typeof g.r3d.hideTowerGhost === 'function') g.r3d.hideTowerGhost();
             if (g.playerBase.towers.length >= g.playerBase.unlockedSlots || g.gold < TOWER_BUILD_COST) this.cancel();
         }
     }
@@ -3618,6 +3757,7 @@ class Interaction {
             this.mode = 'idle';
             if (this.r3d.controls) this.r3d.controls.enabled = true;
             if (this.banner) this.banner.classList.add('hidden');
+            if (this.r3d && typeof this.r3d.hideTowerGhost === 'function') this.r3d.hideTowerGhost();
             this.game.updateButtonsUI();
         } else if (this.mode === 'spawn') {
             this._endSpawn();

@@ -74,36 +74,69 @@
                 <h3>SPAWN &amp; EVOLVE</h3>
                 <div class="buttons-grid unit-cards" id="unit-spawners">
                     <div class="unit-card">
-                        <button id="spawn-u1" class="btn unit-btn" data-unit="1" title="Shortcut: 1">
-                            <span class="unit-name">Clubman · T1</span>
-                            <span class="unit-stats" id="unit-stats-1">HP 50 · ATK 8 · SPD 1.1</span>
-                            <span class="unit-cost">15g</span>
+                        <button id="spawn-u1" class="btn unit-btn moba" data-unit="1" title="Drag onto a lane to send this unit">
+                            <img id="unit-img-1" class="unit-portrait" alt="" draggable="false">
+                            <span class="unit-badge tier" id="unit-tier-1">T1</span>
+                            <span class="unit-badge cost"><i class="ic ic-gold"></i><span id="unit-cost-1">15</span></span>
+                            <span class="unit-name" id="unit-name-1">Clubman</span>
+                            <span class="unit-stats">
+                                <span class="stat hp"><i class="ic ic-hp"></i><b id="ustat-hp-1">50</b></span>
+                                <span class="stat atk"><i class="ic ic-atk"></i><b id="ustat-atk-1">8</b></span>
+                                <span class="stat spd"><i class="ic ic-spd"></i><b id="ustat-spd-1">1.1</b></span>
+                            </span>
                         </button>
-                        <button id="evolve-u1" class="btn evolve-unit-btn" title="Evolve this unit to the next era">
-                            <span class="evo-head"><span class="evo-label">▲ Hoplite</span><span class="evo-cost">112g</span></span>
-                            <span class="evo-stats" id="evo-stats-1">HP 110 · ATK 16 · SPD 1.2</span>
+                        <button id="evolve-u1" class="btn evolve-unit-btn moba" title="Evolve this unit to the next era">
+                            <img id="evo-img-1" class="evo-portrait" alt="" draggable="false">
+                            <span class="evo-head"><span class="evo-label" id="evo-label-1">▲ Hoplite</span><span class="evo-cost" id="evo-cost-1">112g</span></span>
+                            <span class="unit-stats small">
+                                <span class="stat hp"><i class="ic ic-hp"></i><b id="evo-hp-1">110</b></span>
+                                <span class="stat atk"><i class="ic ic-atk"></i><b id="evo-atk-1">16</b></span>
+                                <span class="stat spd"><i class="ic ic-spd"></i><b id="evo-spd-1">1.2</b></span>
+                            </span>
                         </button>
                     </div>
                     <div class="unit-card">
-                        <button id="spawn-u2" class="btn unit-btn" data-unit="2" title="Shortcut: 2">
-                            <span class="unit-name">Spearman · T1</span>
-                            <span class="unit-stats" id="unit-stats-2">HP 55 · ATK 7 · SPD 0.9</span>
-                            <span class="unit-cost">25g</span>
+                        <button id="spawn-u2" class="btn unit-btn moba" data-unit="2" title="Drag onto a lane to send this unit">
+                            <img id="unit-img-2" class="unit-portrait" alt="" draggable="false">
+                            <span class="unit-badge tier" id="unit-tier-2">T1</span>
+                            <span class="unit-badge cost"><i class="ic ic-gold"></i><span id="unit-cost-2">25</span></span>
+                            <span class="unit-name" id="unit-name-2">Spearman</span>
+                            <span class="unit-stats">
+                                <span class="stat hp"><i class="ic ic-hp"></i><b id="ustat-hp-2">55</b></span>
+                                <span class="stat atk"><i class="ic ic-atk"></i><b id="ustat-atk-2">7</b></span>
+                                <span class="stat spd"><i class="ic ic-spd"></i><b id="ustat-spd-2">0.9</b></span>
+                            </span>
                         </button>
-                        <button id="evolve-u2" class="btn evolve-unit-btn" title="Evolve this unit to the next era">
-                            <span class="evo-head"><span class="evo-label">▲ Archer</span><span class="evo-cost">162g</span></span>
-                            <span class="evo-stats" id="evo-stats-2">HP 90 · ATK 13 · SPD 1.0</span>
+                        <button id="evolve-u2" class="btn evolve-unit-btn moba" title="Evolve this unit to the next era">
+                            <img id="evo-img-2" class="evo-portrait" alt="" draggable="false">
+                            <span class="evo-head"><span class="evo-label" id="evo-label-2">▲ Archer</span><span class="evo-cost" id="evo-cost-2">162g</span></span>
+                            <span class="unit-stats small">
+                                <span class="stat hp"><i class="ic ic-hp"></i><b id="evo-hp-2">90</b></span>
+                                <span class="stat atk"><i class="ic ic-atk"></i><b id="evo-atk-2">13</b></span>
+                                <span class="stat spd"><i class="ic ic-spd"></i><b id="evo-spd-2">1.0</b></span>
+                            </span>
                         </button>
                     </div>
                     <div class="unit-card">
-                        <button id="spawn-u3" class="btn unit-btn" data-unit="3" title="Shortcut: 3">
-                            <span class="unit-name">Mammoth Rider</span>
-                            <span class="unit-stats" id="unit-stats-3">HP 250 · ATK 22 · SPD 0.6</span>
-                            <span class="unit-cost">🔒 Unlock 50g</span>
+                        <button id="spawn-u3" class="btn unit-btn moba" data-unit="3" title="Drag onto a lane to send this unit">
+                            <img id="unit-img-3" class="unit-portrait" alt="" draggable="false">
+                            <span class="unit-badge tier" id="unit-tier-3">T1</span>
+                            <span class="unit-badge cost"><i class="ic ic-gold"></i><span id="unit-cost-3">50</span></span>
+                            <span class="unit-name" id="unit-name-3">Mammoth Rider</span>
+                            <span class="unit-stats">
+                                <span class="stat hp"><i class="ic ic-hp"></i><b id="ustat-hp-3">250</b></span>
+                                <span class="stat atk"><i class="ic ic-atk"></i><b id="ustat-atk-3">22</b></span>
+                                <span class="stat spd"><i class="ic ic-spd"></i><b id="ustat-spd-3">0.6</b></span>
+                            </span>
                         </button>
-                        <button id="evolve-u3" class="btn evolve-unit-btn" title="Evolve this unit to the next era" disabled>
-                            <span class="evo-head"><span class="evo-label">Locked</span><span class="evo-cost"></span></span>
-                            <span class="evo-stats" id="evo-stats-3">Unlock the unit first</span>
+                        <button id="evolve-u3" class="btn evolve-unit-btn moba" title="Evolve this unit to the next era">
+                            <img id="evo-img-3" class="evo-portrait" alt="" draggable="false">
+                            <span class="evo-head"><span class="evo-label" id="evo-label-3">Locked</span><span class="evo-cost" id="evo-cost-3"></span></span>
+                            <span class="unit-stats small">
+                                <span class="stat hp"><i class="ic ic-hp"></i><b id="evo-hp-3">0</b></span>
+                                <span class="stat atk"><i class="ic ic-atk"></i><b id="evo-atk-3">0</b></span>
+                                <span class="stat spd"><i class="ic ic-spd"></i><b id="evo-spd-3">0</b></span>
+                            </span>
                         </button>
                     </div>
                 </div>
@@ -116,7 +149,7 @@
                         <span class="tower-label">Unlock Slot</span>
                         <span id="tower-slot-cost" class="tower-cost">150g</span>
                     </button>
-                    <button id="buy-tower" class="btn tower-btn" title="Place a tower in an empty slot">
+                    <button id="buy-tower" class="btn tower-btn" title="Place a tower anywhere on the map (shows its range while placing)">
                         <span class="tower-label">Build Tower</span>
                         <span id="tower-cost" class="tower-cost">200g</span>
                     </button>
@@ -268,6 +301,7 @@
         </div>
     </div>
 
+    <script src="sounds.js"></script>
     <script type="module" src="script.js"></script>
 </body>
 </html>
