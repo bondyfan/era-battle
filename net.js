@@ -15,7 +15,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
     getDatabase, ref, child, get, set, update, push, remove,
-    onValue, onChildAdded, onDisconnect, runTransaction
+    onValue, onChildAdded, onDisconnect
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -86,27 +86,15 @@ export const EraNet = {
         ensureInit();
         code = (code || "").toUpperCase().trim();
         const gref = ref(db, "games/" + code);
-        const metaRef = child(gref, "meta");
-        // Atomically claim the guest slot so a host cancel / a second guest can't race us in.
-        const result = await withTimeout(runTransaction(metaRef, (meta) => {
-            if (!meta) return;                                   // game not found -> abort
-            if (meta.state === "ended") return;                  // already ended -> abort
-            if (meta.guest && meta.guest !== this.uid) return;   // already full  -> abort
-            meta.guest = this.uid;
-            meta.state = "playing";
-            return meta;
-        }), DB_UNREACHABLE);
-
-        if (!result.committed) {
-            const meta = result.snapshot && result.snapshot.val();
-            if (!meta) throw new Error("Game not found. Check the code.");
-            if (meta.state === "ended") throw new Error("That match already ended.");
-            throw new Error("That match is already full.");
-        }
-
+        const snap = await withTimeout(get(child(gref, "meta")), DB_UNREACHABLE);
+        if (!snap.exists()) throw new Error("Game not found. Check the code.");
+        const meta = snap.val() || {};
+        if (meta.state === "ended") throw new Error("That match already ended.");
+        if (meta.guest && meta.guest !== this.uid) throw new Error("That match is already full.");
         this.role = "guest";
         this.code = code;
         this.gameRef = gref;
+        await withTimeout(update(child(gref, "meta"), { guest: this.uid, state: "playing" }), DB_UNREACHABLE);
         this._setupPresence();
         return true;
     },
