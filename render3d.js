@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
     mapX, mapZ, mapYFromSimY, S,
-    MAP_SIZE, CORNER3,
+    MAP_SIZE, THREE_FIELD, CORNER3,
     LANE_BY_IDX, LANE_IDX,
     laneLength, posAt, laneSamples,
 } from './world.js';
@@ -30,9 +30,11 @@ const TEAM = {
     enemy: { main: 0xdc2626, accent: 0xf87171, hp: 0xef4444, dark: 0x7f1d1d },
 };
 
-// Three-space span of the square map (MAP_SIZE sim units -> three units).
-const FIELD = MAP_SIZE * S;              // ~100 three units across
-const HALF = FIELD / 2;                  // ~50
+// Three-space span of the square map. THREE_FIELD comes from world.js and now
+// equals ~156 (the bigger 5000-unit map). Everything below scales off FIELD/HALF
+// so the camera, lights, shadows, fog and ground all reframe automatically.
+const FIELD = THREE_FIELD;               // === MAP_SIZE * S (three units across)
+const HALF = FIELD / 2;                  // ~78
 
 // Small seeded PRNG so scatter (trees/rocks/grass) is deterministic per run.
 function makeRng(seed) {
@@ -310,16 +312,17 @@ export function createRenderer(canvas) {
         const pCorner = { x: CORNER3.player.x, z: CORNER3.player.z };
         const eCorner = { x: CORNER3.enemy.x, z: CORNER3.enemy.z };
         let placed = 0, tries = 0;
-        const MAX = 150;   // bigger field => a few more props to fill it
+        // Bigger field (~4x the area) => scatter many more props to fill it.
+        const MAX = 340;
         while (placed < MAX && tries < MAX * 25) {
             tries++;
             // scatter across a region a bit larger than the field
             const x = (rng() * 2 - 1) * (HALF * 1.28);
             const z = (rng() * 2 - 1) * (HALF * 1.28);
-            // keep clear of lanes and bases (bases are ~18 wide at the corners)
-            if (distToLanes(x, z) < 6) continue;
-            if (distToCorner(x, z, pCorner) < 18) continue;
-            if (distToCorner(x, z, eCorner) < 18) continue;
+            // keep clear of the (now wider-spaced) lanes and bases
+            if (distToLanes(x, z) < 7) continue;
+            if (distToCorner(x, z, pCorner) < 20) continue;
+            if (distToCorner(x, z, eCorner) < 20) continue;
             const roll = rng();
             let node;
             if (roll > 0.42) {
@@ -353,7 +356,6 @@ export function createRenderer(canvas) {
     const baseLayer = new THREE.Group(); scene.add(baseLayer);
 
     const unitViews = new Map();   // id -> view
-    const projPool = [];
     const fxParts = [];            // burst particles
     const textPool = [];           // floating text sprites
     let curPlayerEra = 0, curEnemyEra = 0;
@@ -386,6 +388,14 @@ export function createRenderer(canvas) {
     //   accent only (banner/trim/crest), never the whole body.
     // Materials are cached by (era, teamKey) so buildUnit stays cheap.
     // ----------------------------------------------------------------------
+    // Global readability bump for the (now much bigger) field: units are ~1.3x
+    // larger so they stay legible on the 5000-unit map. Applied as a uniform
+    // group scale so every unit stays proportional and planted on the ground.
+    const UNIT_SCALE = 1.3;
+    // Drone hover height in three-space (scaled with the unit so it hovers
+    // proportionally higher above the bigger field).
+    const DRONE_HOVER_Y = 2.4 * UNIT_SCALE;
+
     const ERA_UNIT = [
         // Stone — hide/fur/wood
         { primary: 0x8a6b45, secondary: 0x5b3d24, trim: 0x9a8460, metal: 0.02, rough: 0.95 },
@@ -486,8 +496,10 @@ export function createRenderer(canvas) {
             g.add(eye); parts.weapon = eye;
             g.add(M(G.cone(0.35, 0.4, 8, 'd_thrust'), mats.glow, 0, -0.7, 0));
             parts.hover = true;
-            g.position.y = 2.4;
+            parts.hoverY = DRONE_HOVER_Y;
+            g.position.y = DRONE_HOVER_Y;
             const hp = hpBarSprite(); hp.position.y = 1.7; g.add(hp); parts.hp = hp;
+            g.scale.setScalar(UNIT_SCALE);
             g.userData = { parts, era, ti, teamKey, animOff: Math.random() * 6.28 };
             return g;
         }
@@ -850,6 +862,9 @@ export function createRenderer(canvas) {
         const hp = hpBarSprite();
         hp.position.y = (ti === 2 ? (era === 4 ? 5.4 : 4.0) : 3.4);
         g.add(hp); parts.hp = hp;
+        // Uniform readability bump for the bigger field; units modeled standing
+        // on y=0 so a group scale keeps their feet on the ground.
+        g.scale.setScalar(UNIT_SCALE);
         g.userData = { parts, era, ti, teamKey, animOff: Math.random() * 6.28 };
         return g;
     }
@@ -1001,25 +1016,115 @@ export function createRenderer(canvas) {
     }
 
     // ---- Projectiles ----
-    const PROJ_COLORS = { pebble: 0x9ca3af, spear: 0xa8a29e, arrow: 0xd97706, bolt: 0xcbd5e1, firepot: 0xf97316, bullet: 0xfbbf24, grenade: 0x1e3a8a, shell: 0x64748b, plasma: 0x22d3ee };
-    function acquireProj() {
-        for (const p of projPool) if (!p.active) return p;
-        const m = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 8), new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 1.2, roughness: 0.4 }));
-        m.visible = false; projLayer.add(m);
-        const p = { mesh: m, active: false }; projPool.push(p); return p;
+    // Each projectile TYPE renders as its own little model, oriented along its
+    // direction of travel (pr.heading, radians about Y). A long projectile is
+    // built so it lies along +X in local space, so rotation.y = heading points
+    // its length where it flies. Pools are kept PER TYPE so we reuse the right
+    // shape without rebuilding meshes every frame.
+    const projTypePools = new Map(); // type -> array of { group, active, _used }
+
+    // Build a fresh procedural model for a projectile type (length along +X).
+    function buildProjModel(type) {
+        const grp = new THREE.Group();
+        const projMat = (color, opts = {}) => new THREE.MeshStandardMaterial({
+            color, flatShading: true,
+            roughness: opts.rough ?? 0.5, metalness: opts.metal ?? 0.2,
+            emissive: opts.emissive ?? 0x000000, emissiveIntensity: opts.ei ?? 1,
+        });
+        switch (type) {
+            case 'spear': {
+                // long thin shaft (wood) + steel cone tip, laid horizontal along +X
+                const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.4, 6), projMat(0x6b4a2a, { rough: 0.85 }));
+                shaft.rotation.z = Math.PI / 2; grp.add(shaft);
+                const tip = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.5, 6), projMat(0xcbd5e1, { rough: 0.4, metal: 0.6 }));
+                tip.rotation.z = -Math.PI / 2; tip.position.x = 1.45; grp.add(tip);
+                break;
+            }
+            case 'arrow': {
+                const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.5, 5), projMat(0x8a5a2b, { rough: 0.85 }));
+                shaft.rotation.z = Math.PI / 2; grp.add(shaft);
+                const tip = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.32, 5), projMat(0x9aa3ad, { rough: 0.4, metal: 0.6 }));
+                tip.rotation.z = -Math.PI / 2; tip.position.x = 0.9; grp.add(tip);
+                // fletch (small crossed feathers at the tail)
+                const fl = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.02, 0.22), projMat(0xd97706, { rough: 0.9 }));
+                fl.position.x = -0.72; grp.add(fl);
+                break;
+            }
+            case 'bolt': {
+                // short thick crossbow bolt
+                const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.9, 6), projMat(0x5c6773, { rough: 0.45, metal: 0.5 }));
+                shaft.rotation.z = Math.PI / 2; grp.add(shaft);
+                const tip = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.34, 6), projMat(0xd7dde3, { rough: 0.3, metal: 0.7 }));
+                tip.rotation.z = -Math.PI / 2; tip.position.x = 0.6; grp.add(tip);
+                break;
+            }
+            case 'firepot': {
+                // glowing lobbed fireball
+                const core = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), projMat(0xf97316, { rough: 0.4, emissive: 0xf97316, ei: 1.6 }));
+                grp.add(core);
+                break;
+            }
+            case 'bullet': {
+                // tiny fast bright dot
+                const b = new THREE.Mesh(new THREE.SphereGeometry(0.16, 6, 5), projMat(0xfbbf24, { emissive: 0xfbbf24, ei: 2.2, rough: 0.3 }));
+                b.scale.set(1.8, 1, 1); grp.add(b);
+                break;
+            }
+            case 'grenade': {
+                const b = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 6), projMat(0x1f2937, { rough: 0.6, metal: 0.4 }));
+                grp.add(b);
+                // little top nub
+                grp.add((() => { const n = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.14, 6), projMat(0x475569, { metal: 0.5 })); n.position.y = 0.32; return n; })());
+                break;
+            }
+            case 'shell': {
+                // tank shell: short capsule/cylinder along +X with a rounded nose
+                const body = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.7, 8), projMat(0x64748b, { rough: 0.45, metal: 0.6 }));
+                body.rotation.z = Math.PI / 2; grp.add(body);
+                const nose = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.34, 8), projMat(0x94a3b8, { rough: 0.4, metal: 0.6 }));
+                nose.rotation.z = -Math.PI / 2; nose.position.x = 0.5; grp.add(nose);
+                break;
+            }
+            case 'plasma': {
+                // glowing cyan orb
+                const orb = new THREE.Mesh(new THREE.SphereGeometry(0.4, 10, 8), projMat(0x0a2a30, { emissive: 0x22d3ee, ei: 2.2, rough: 0.25 }));
+                grp.add(orb);
+                break;
+            }
+            case 'pebble':
+            default: {
+                const b = new THREE.Mesh(new THREE.SphereGeometry(0.28, 7, 6), projMat(0x9ca3af, { rough: 0.9 }));
+                grp.add(b);
+                break;
+            }
+        }
+        grp.traverse(o => { if (o.isMesh) o.castShadow = false; });
+        return grp;
+    }
+    function acquireProj(type) {
+        let pool = projTypePools.get(type);
+        if (!pool) { pool = []; projTypePools.set(type, pool); }
+        for (const p of pool) if (!p.active) return p;
+        const group = buildProjModel(type);
+        group.visible = false; projLayer.add(group);
+        const p = { group, active: false, _used: false }; pool.push(p); return p;
     }
     function syncProjectiles(list, _mirror) {
         for (const pr of list) {
-            const p = acquireProj(); p.active = true;
-            const c = PROJ_COLORS[pr.type] || 0xffffff;
-            p.mesh.material.color.setHex(c); p.mesh.material.emissive.setHex(c);
-            p.mesh.position.set(mapX(pr.x), Math.max(0.4, mapYFromSimY(pr.y)), mapZ(pr.z));
-            const big = pr.type === 'firepot' || pr.type === 'shell' || pr.type === 'grenade';
-            p.mesh.scale.setScalar(big ? 1.5 : 1);
-            p.mesh.visible = true;
+            const type = pr.type || 'pebble';
+            const p = acquireProj(type); p.active = true;
+            p.group.position.set(mapX(pr.x), Math.max(0.4, mapYFromSimY(pr.y)), mapZ(pr.z));
+            // orient long projectiles along their travel direction
+            p.group.rotation.y = (typeof pr.heading === 'number') ? pr.heading : 0;
+            p.group.visible = true;
             p._used = true;
         }
-        for (const p of projPool) { if (p.active && !p._used) { p.active = false; p.mesh.visible = false; } p._used = false; }
+        for (const pool of projTypePools.values()) {
+            for (const p of pool) {
+                if (p.active && !p._used) { p.active = false; p.group.visible = false; }
+                p._used = false;
+            }
+        }
     }
 
     // ---- Specials (visual overlays) ----
@@ -1258,9 +1363,16 @@ export function createRenderer(canvas) {
     // PER-FRAME UNIT SYNC
     // ======================================================================
     const clock = new THREE.Clock();
+    // Separate clock just for measuring the per-frame delta that drives all unit
+    // animation. Kept apart from render()'s getDelta() so phase accumulators are
+    // frame-rate independent (no high-frequency per-frame sine mapping = no jitter).
+    const animClock = new THREE.Clock();
     function syncUnits(list, _mirror) {
         const seen = new Set();
         const time = clock.elapsedTime;
+        // dt for animation phase accumulators, clamped so a stalled tab can't
+        // fling a thrust across the whole cycle in one frame.
+        const dt = Math.min(0.05, animClock.getDelta());
         for (const u of list) {
             seen.add(u.id);
             let v = unitViews.get(u.id);
@@ -1273,12 +1385,17 @@ export function createRenderer(canvas) {
             const g = v.group;
             const tx = mapX(u.x);
             const tz = mapZ(u.z);
-            if (!v.inited) { g.position.x = tx; g.position.z = tz; v.inited = true; }
-            else { g.position.x += (tx - g.position.x) * 0.35; g.position.z += (tz - g.position.z) * 0.35; }
+            // Lerp the SYNCED transform (base position). Animation offsets are
+            // applied on top of this each frame and fully reset first, so the
+            // lerp never compounds against a leftover thrust offset.
+            if (!v.inited) { v.baseX = tx; v.baseZ = tz; v.inited = true; }
+            else { v.baseX += (tx - v.baseX) * 0.35; v.baseZ += (tz - v.baseZ) * 0.35; }
+            g.position.x = v.baseX;
+            g.position.z = v.baseZ;
             // heading (radians) from the sim; fall back to facing sign.
             g.rotation.y = (typeof u.heading === 'number') ? u.heading : (u.facing > 0 ? 0 : Math.PI);
 
-            animateUnit(v, u, time + g.userData.animOff);
+            animateUnit(v, u, time + g.userData.animOff, dt);
         }
         for (const [id, v] of unitViews) {
             if (!seen.has(id)) { unitLayer.remove(v.group); disposeTree(v.group); unitViews.delete(id); }
@@ -1299,7 +1416,26 @@ export function createRenderer(canvas) {
         }
     }
 
-    function animateUnit(v, u, t) {
+    // ---- Combat thrust cycle timing (a SLOW, PERIODIC punch — not a shake) ----
+    const THRUST_PERIOD = 0.65;   // seconds between thrusts
+    const THRUST_OUT = 0.07;      // time to lunge fully out
+    const THRUST_BACK = 0.07;     // time to snap back (out+back ~= 0.14s active)
+    const THRUST_ACTIVE = THRUST_OUT + THRUST_BACK;
+    // 0 at rest, ramps to 1 at full extension, back to EXACTLY 0, then rests.
+    function thrustEnvelope(phase) {
+        if (phase < THRUST_OUT) {
+            const x = phase / THRUST_OUT;               // 0..1 out
+            return x * x * (3 - 2 * x);                 // smoothstep
+        }
+        if (phase < THRUST_ACTIVE) {
+            const x = (phase - THRUST_OUT) / THRUST_BACK; // 0..1 back
+            const s = 1 - (x * x * (3 - 2 * x));
+            return s;
+        }
+        return 0;                                       // rest — exactly 0
+    }
+
+    function animateUnit(v, u, t, dt) {
         const p = v.group.userData.parts;
         const g = v.group;
         const hpRatio = Math.max(0, u.hp / u.maxHp);
@@ -1316,65 +1452,81 @@ export function createRenderer(canvas) {
         if (g.rotation.z !== 0) g.rotation.z = 0;
 
         const walking = u.state === 'walk' && !u.isBlocked;
-        const rate = 8 * (u.speed || 1);
-        const ph = t * rate;
+        const attacking = u.state === 'attack';
         const veh = isVehicle(v);
+        const isMelee = MELEE_TYPES.has(u.type);
+
+        // ---- walk-phase accumulator (dt-based, smooth, stops dead when idle) ----
+        // Only advances while actually walking, so a blocked/idle unit is frozen
+        // with legs at rest and zero bob — no residual jitter.
+        if (walking) v._walkPh = (v._walkPh || 0) + dt * 9 * (u.speed || 1);
+        const wph = v._walkPh || 0;
+        // Smoothly relax the walk amplitude to 0 when not walking so legs/bob
+        // settle instead of snapping.
+        v._walkAmt = (v._walkAmt ?? 0) + ((walking ? 1 : 0) - (v._walkAmt ?? 0)) * Math.min(1, dt * 12);
+        if (v._walkAmt < 0.002) v._walkAmt = 0;
+        const walkAmt = v._walkAmt;
 
         // ---- vertical bob / hover / chassis rumble ----
         if (p.hover) {
-            g.position.y = 2.4 + Math.sin(t * 1.6) * 0.22;
+            // gentle continuous hover (a flyer is never "still")
+            v._hoverPh = (v._hoverPh || 0) + dt * 1.6;
+            g.position.y = (p.hoverY ?? 2.4) + Math.sin(v._hoverPh) * 0.22;
         } else if (p.body) {
-            const bob = walking ? (veh ? Math.abs(Math.sin(ph)) * 0.05 : Math.abs(Math.sin(ph)) * 0.12) : 0;
+            const bob = (veh ? 0.05 : 0.12) * walkAmt * Math.abs(Math.sin(wph));
             p.body.position.y = v._bodyBaseY + bob;
         }
 
         // ---- leg / stride (bipeds + mammoth + mech; vehicles skip) ----
         if (!p.hover && !veh && p.legL && p.legR) {
-            const s = walking ? Math.sin(ph) * 0.5 : 0;
+            const s = Math.sin(wph) * 0.5 * walkAmt;
             p.legL.rotation.x = s; p.legR.rotation.x = -s;
         }
 
-        // ---- MELEE LUNGE toward heading on the strike (clear punch/thrust) ----
-        const isMelee = MELEE_TYPES.has(u.type);
-        if (u.state === 'attack') {
-            if (v._lungePrev !== 'attack') v._lungeT = 0;
-            v._lungeT = (v._lungeT || 0) + 0.16;          // advance strike cycle
-            const cyc = v._lungeT % 1;
-            // fast thrust out over first 35%, ease back over remainder
-            const punch = cyc < 0.35 ? (cyc / 0.35) : 1 - ((cyc - 0.35) / 0.65);
-            const eased = punch * punch * (3 - 2 * punch); // smoothstep
-            v._lungeAmt = isMelee ? eased * (u.type === 'heavy_melee' ? 2.2 : 1.8) : -eased * 0.5;
+        // ---- COMBAT THRUST: one clean periodic punch, driven by a phase accum ----
+        // Advance a per-view phase by dt only while attacking; wrap the period.
+        // Reset the phase on the rising edge so the first thrust starts clean.
+        let env = 0;
+        if (attacking) {
+            if (v._thrustPrev !== 'attack') v._thrustPh = 0;
+            v._thrustPh = (v._thrustPh || 0) + dt;
+            if (v._thrustPh >= THRUST_PERIOD) v._thrustPh -= THRUST_PERIOD;
+            env = thrustEnvelope(v._thrustPh);
         } else {
-            v._lungeAmt = (v._lungeAmt || 0) * 0.6;
-            if (Math.abs(v._lungeAmt) < 0.01) v._lungeAmt = 0;
+            v._thrustPh = 0;
         }
-        v._lungePrev = u.state;
-        if (v._lungeAmt) {
+        v._thrustPrev = u.state;
+
+        // Body lunge along heading. Ranged units pull slightly BACK (recoil).
+        // env is exactly 0 between thrusts and when not attacking, so the group
+        // offset from the synced transform is exactly zero at rest — no vibration.
+        const lungeAmp = isMelee ? (u.type === 'heavy_melee' ? 2.2 : 1.8) : -0.5;
+        if (env !== 0) {
+            const amt = env * lungeAmp;
             const hdg = g.rotation.y;   // heading set by syncUnits
-            g.position.x += Math.cos(hdg) * v._lungeAmt;
-            g.position.z += Math.sin(hdg) * v._lungeAmt;
+            g.position.x += Math.cos(hdg) * amt;
+            g.position.z += Math.sin(hdg) * amt;
         }
 
-        // ---- weapon action ----
+        // ---- weapon action (all keyed to the same discrete thrust envelope) ----
         if (p.weapon && v._wRest) {
             const w = p.weapon, r = v._wRest;
-            if (u.state === 'attack') {
+            if (attacking) {
                 if (isMelee) {
-                    // overhead/thrust swing on the weapon pivot
-                    const swing = Math.sin(v._lungeT * Math.PI * 2);
-                    w.rotation.z = r.rz - 0.9 - swing * 0.7;
+                    // overhead/thrust swing tracks the thrust envelope (one clean strike)
+                    w.rotation.z = r.rz - env * 1.4;
                 } else if (v.era === 2 && v.ti === 2) {
-                    // Catapult: arm flings forward
-                    w.rotation.x = r.rx + Math.max(0, Math.sin(t * 8)) * 1.4;
+                    // Catapult: arm flings forward on the thrust, then resets
+                    w.rotation.x = r.rx + env * 1.4;
                 } else if (veh) {
                     // Tank/Chariot: barrel recoil kick along its axis
-                    w.position.z = r.z - Math.max(0, Math.sin(t * 18)) * 0.25;
+                    w.position.z = r.z - env * 0.25;
                 } else {
                     // ranged infantry / mech: small gun recoil
-                    w.position.z = r.z - Math.max(0, Math.sin(t * 22)) * 0.12;
+                    w.position.z = r.z - env * 0.12;
                 }
             } else {
-                // return to rest pose
+                // return to rest pose (exact)
                 w.rotation.z = r.rz; w.rotation.x = r.rx; w.position.z = r.z;
             }
         }

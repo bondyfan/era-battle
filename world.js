@@ -8,22 +8,22 @@
 // Pure ESM, NO three.js import (safe for the sim to load eagerly).
 // ==========================================================================
 
-// ---- SIM SPACE: a large square map (bigger => longer lanes) ----
-export const MAP_SIZE = 2600;
+// ---- SIM SPACE: a large square map (bigger => longer lanes / longer travel) ----
+export const MAP_SIZE = 5000;            // ~2x longer lanes than before (longer paths)
 export const VIRTUAL_WIDTH = MAP_SIZE;   // legacy alias
 export const VIRTUAL_HEIGHT = MAP_SIZE;
 export const GROUND_Y = 340;             // kept only for projectile arc-height math
 export const BASE_HP_MAX = 2000;
 
-export const PLAYER_CORNER = { x: 360, z: 360 };
-export const ENEMY_CORNER = { x: MAP_SIZE - 360, z: MAP_SIZE - 360 };
+export const PLAYER_CORNER = { x: 700, z: 700 };
+export const ENEMY_CORNER = { x: MAP_SIZE - 700, z: MAP_SIZE - 700 };
 // Legacy scalar aliases used for some FX; approximate the base corners.
 export const PLAYER_BASE_X = PLAYER_CORNER.x;
 export const ENEMY_BASE_X = ENEMY_CORNER.x;
 
-export const BASE_REACH = 230;            // arc-length from a lane's end where a unit can hit the base
-export const TOWER_MIN_SPACING = 150;     // towers can't be placed closer than this (world units)
-export const TOWER_LANE_CLEARANCE = 80;   // towers must be at least this far OFF a lane path
+export const BASE_REACH = 440;            // arc-length from a lane's end where a unit can hit the base
+export const TOWER_MIN_SPACING = 280;     // towers can't be placed closer than this (world units)
+export const TOWER_LANE_CLEARANCE = 150;  // towers must be at least this far OFF a lane path
 export const LANE_UNLOCK_COST = 300;      // unlock TOP or BOTTOM (per side)
 
 export const LANE_BY_IDX = ['mid', 'top', 'bottom'];
@@ -114,7 +114,7 @@ export function distToLane(x, z) {
 }
 
 // ---- RENDER MAPPING (square sim -> three.js units) ----
-export const THREE_FIELD = 112;              // three-space width of the whole map
+export const THREE_FIELD = 156;              // three-space width of the whole map
 export const S = THREE_FIELD / MAP_SIZE;     // sim units -> three units
 const HALF = MAP_SIZE / 2;
 export const mapX = (x) => (x - HALF) * S;

@@ -10,7 +10,7 @@
     const NAMES = [
         'attack_melee', 'attack_ranged', 'hit', 'death', 'spawn', 'kill_gold',
         'purchase', 'upgrade', 'evolve', 'evolve_ready', 'tower_build',
-        'lane_unlock', 'special', 'victory', 'defeat', 'click', 'error'
+        'lane_unlock', 'special', 'victory', 'defeat', 'click', 'error', 'base_hit'
     ];
     const POOL = 4;                 // simultaneous instances per sound (overlap)
     const pools = {};
@@ -85,56 +85,81 @@
         level1: 'music/level1.mp3',
         level3: 'music/level3.mp3',
     };
-    let curAudio = null, curName = null, musVol = 0.42, musMuted = false;
+    // One cached, STREAMING <audio> element per track. We never wait for the whole
+    // file: the browser plays as soon as it has buffered enough (canplay), and the
+    // fade-in is driven by real playback time (rAF), not a fixed timer — so a slow
+    // network can't leave the volume stuck at 0 or delay the perceived start.
+    const musEls = {};
+    let curName = null, musVol = 0.42, musMuted = false;
+    let fadeRaf = null;
+
+    function getEl(name) {
+        let a = musEls[name];
+        if (!a) {
+            a = new Audio();
+            a.src = TRACKS[name];
+            a.loop = true;
+            a.preload = 'auto';
+            a.volume = 0;
+            try { a.load(); } catch (e) {}
+            musEls[name] = a;
+        }
+        return a;
+    }
 
     function musicPlay(name, opts) {
         opts = opts || {};
-        const url = TRACKS[name];
-        if (!url) return;
-        if (curName === name && curAudio && !curAudio.paused) return; // already playing
+        if (!TRACKS[name]) return;
+        if (curName === name && musEls[name] && !musEls[name].paused) return; // already playing
+        const prevName = curName;
         curName = name;
-        const next = new Audio(url);
-        next.loop = opts.loop !== false;
-        next.volume = 0;
+        const next = getEl(name);
         const target = musMuted ? 0 : musVol;
+        const fadeMs = opts.fade != null ? opts.fade : 900;
         const pr = next.play();
-        if (pr && pr.catch) pr.catch(() => {}); // may be blocked until a user gesture
-        const old = curAudio;
-        curAudio = next;
-        const fade = opts.fade != null ? opts.fade : 900;
-        const steps = 24;
-        let i = 0;
-        const iv = setInterval(() => {
-            i++;
-            const t = i / steps;
-            if (!next.paused) next.volume = target * t;
-            if (old) old.volume = Math.max(0, old.volume * (1 - t));
-            if (i >= steps) { clearInterval(iv); if (old) { try { old.pause(); } catch (e) {} } }
-        }, fade / steps);
+        if (pr && pr.catch) pr.catch(() => {}); // blocked until a user gesture -> retried below
+
+        // rAF crossfade tied to wall-clock; keeps working even while buffering.
+        if (fadeRaf) cancelAnimationFrame(fadeRaf);
+        const t0 = performance.now();
+        const prev = prevName && prevName !== name ? musEls[prevName] : null;
+        const prevStart = prev ? prev.volume : 0;
+        const step = (now) => {
+            const t = Math.min(1, (now - t0) / fadeMs);
+            if (!next.paused) next.volume = target * t;   // only ramps once actually playing
+            if (prev) prev.volume = Math.max(0, prevStart * (1 - t));
+            if (t < 1) { fadeRaf = requestAnimationFrame(step); }
+            else { fadeRaf = null; if (prev) { try { prev.pause(); prev.currentTime = 0; } catch (e) {} } if (!next.paused) next.volume = target; }
+        };
+        fadeRaf = requestAnimationFrame(step);
     }
     function musicStop(fade) {
-        const old = curAudio; curAudio = null; curName = null;
-        if (!old) return;
-        const steps = 16; let i = 0;
-        const iv = setInterval(() => {
-            i++; old.volume = Math.max(0, old.volume * (1 - i / steps));
-            if (i >= steps) { clearInterval(iv); try { old.pause(); } catch (e) {} }
-        }, (fade || 600) / steps);
+        const el = curName ? musEls[curName] : null; curName = null;
+        if (!el) return;
+        const t0 = performance.now(); const v0 = el.volume; const dur = fade || 600;
+        const step = (now) => {
+            const t = Math.min(1, (now - t0) / dur);
+            el.volume = Math.max(0, v0 * (1 - t));
+            if (t < 1) requestAnimationFrame(step); else { try { el.pause(); } catch (e) {} }
+        };
+        requestAnimationFrame(step);
     }
+    // Start downloading the menu track immediately so it's ready to play on the first click.
+    getEl('mainmenu');
     // If autoplay was blocked, resume the requested track on the first gesture.
     window.addEventListener('pointerdown', () => {
-        if (curName && curAudio && curAudio.paused) {
-            const p = curAudio.play(); if (p && p.catch) p.catch(() => {});
-            if (!musMuted) curAudio.volume = musVol;
+        if (curName && musEls[curName] && musEls[curName].paused) {
+            const p = musEls[curName].play(); if (p && p.catch) p.catch(() => {});
+            if (!musMuted) musEls[curName].volume = musVol;
         }
     }, { passive: true });
 
     window.Music = {
         play: musicPlay,
         stop: musicStop,
-        setVolume(v) { musVol = Math.max(0, Math.min(1, v)); if (curAudio && !musMuted) curAudio.volume = musVol; },
-        setMuted(m) { musMuted = !!m; if (curAudio) curAudio.volume = musMuted ? 0 : musVol; },
-        toggleMuted() { musMuted = !musMuted; if (curAudio) curAudio.volume = musMuted ? 0 : musVol; return musMuted; },
+        setVolume(v) { musVol = Math.max(0, Math.min(1, v)); const a = curName && musEls[curName]; if (a && !musMuted) a.volume = musVol; },
+        setMuted(m) { musMuted = !!m; const a = curName && musEls[curName]; if (a) a.volume = musMuted ? 0 : musVol; },
+        toggleMuted() { musMuted = !musMuted; const a = curName && musEls[curName]; if (a) a.volume = musMuted ? 0 : musVol; return musMuted; },
         current() { return curName; },
     };
 })();

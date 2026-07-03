@@ -37,22 +37,14 @@ body {
 }
 
 #game-container {
-    width: min(1280px, 100vw);
-    height: min(800px, 100vh);
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     background: radial-gradient(circle at center, #111827 0%, #030712 100%);
-    border: 1px solid var(--border-color);
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
     overflow: hidden;
     position: relative;
-}
-
-@media (min-width: 1300px) and (min-height: 820px) {
-    #game-container {
-        border: 2px solid var(--border-color);
-        border-radius: 16px;
-    }
 }
 
 /* ==========================================================================

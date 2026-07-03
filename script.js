@@ -325,7 +325,7 @@ const ERA_DATA = [
 // Spatial constants (VIRTUAL_WIDTH/GROUND_Y/PLAYER_BASE_X/ENEMY_BASE_X/BASE_HP_MAX/...)
 // are imported from world.js so the sim and the 3D renderer never disagree.
 const SPECIAL_COOLDOWN_MS = 40000; // 40 seconds
-const SPECIAL_RADIUS = 520;        // sim units — placement radius for the targeted special
+const SPECIAL_RADIUS = 950;        // sim units — placement radius for the targeted special (scaled for the bigger map)
 const TOWER_SLOT_COSTS = [150, 400, 1000];
 const TOWER_BUILD_COST = 250;
 
@@ -863,6 +863,12 @@ class Projectile {
         this.targetX = target.x;
         this.targetY = target.y - (target.height ? target.height / 2 : 50);
         this.isDead = false;
+
+        // Travel heading (radians about Y in the XZ plane): direction start -> target.
+        // The renderer uses this to orient long projectiles (spear/arrow/bolt/shell).
+        // Keep the initial heading even if the target later moves.
+        const h = Math.atan2(this.targetZ - this.startZ, this.targetX - this.startX);
+        this.heading = Number.isFinite(h) ? h : 0;
     }
 
     update(dt, game) {
@@ -1279,6 +1285,10 @@ class Unit {
             // Battle SFX (throttled globally so it's ambience, not a cacophony)
             const melee = (this.type === 'melee' || this.type === 'heavy_melee' || this.type === 'shielded_melee');
             sfx(melee ? 'attack_melee' : 'attack_ranged', { throttle: 110, volume: 0.5 });
+
+            // Distinct thud when this strike/fire actually targets a base (melee + ranged)
+            const hittingBase = (this.target === game.enemyBase || this.target === game.playerBase);
+            if (hittingBase) sfx('base_hit', { throttle: 140, volume: 0.7 });
 
             // Melee vs Ranged action
             if (this.type === 'melee' || this.type === 'heavy_melee' || this.type === 'shielded_melee') {
@@ -2424,9 +2434,10 @@ class Game {
         u.lane = lane;
         u.facing = team === 'player' ? 1 : -1;
         const len = laneLength(lane);
-        // deterministic ±15 jitter along the lane so units don't perfectly stack
-        const jitter = ((u.id * 53) % 31) - 15;
-        let d = team === 'player' ? (20 + jitter) : (len - 20 + jitter);
+        // deterministic ±30 jitter along the lane so units don't perfectly stack
+        // (scaled up with the bigger map so units still emerge nicely spaced)
+        const jitter = ((u.id * 53) % 61) - 30;
+        let d = team === 'player' ? (40 + jitter) : (len - 40 + jitter);
         d = Math.max(0, Math.min(len, d));
         u.dist = d;
         const p = posAt(lane, d);
@@ -3098,7 +3109,7 @@ class Game {
         for (const un of this.enemyUnits) u.push([un.id, 'e', un.era, un.typeIndex, safeInt(un.x), safeInt(un.z), LANE_IDX[un.lane] || 0, safeInt(un.hp), un.state, un.facing, hround(un.heading), +un.deathProgress.toFixed(2)]);
 
         const p = [];
-        for (const pr of this.projectiles) p.push([safeInt(pr.x), safeInt(pr.y), safeInt(pr.z ?? 0), pr.type, pr.team]);
+        for (const pr of this.projectiles) p.push([safeInt(pr.x), safeInt(pr.y), safeInt(pr.z ?? 0), pr.type, pr.team, hround(pr.heading)]);
 
         const s = [];
         for (const sa of this.specialAttacks) {
@@ -3243,8 +3254,10 @@ class Game {
         }
 
         // Projectiles / specials — 180° rotation: mirror x AND z, swap team
-        this.netProjectiles = (snap.p || []).map(([x, y, z, type, team]) => ({
-            x: mirrorX(x), y, z: mirrorZ(z), type, team: team === 'player' ? 'enemy' : 'player'
+        this.netProjectiles = (snap.p || []).map(([x, y, z, type, team, heading]) => ({
+            x: mirrorX(x), y, z: mirrorZ(z), type, team: team === 'player' ? 'enemy' : 'player',
+            // 180° map rotation on the guest also rotates the travel heading by π
+            heading: (Number.isFinite(heading) ? heading : 0) + Math.PI
         }));
         this.netSpecials = (snap.s || []).map(([type, team, x, z]) => ({
             type, team: team === 'player' ? 'enemy' : 'player', x: mirrorX(x), z: mirrorZ(z)
